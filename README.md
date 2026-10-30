@@ -94,7 +94,7 @@ The app chooses its storage when it is built ([src/storage/index.ts](src/storage
 | Env vars | Backend | Sign-in | Where data lives |
 |---|---|---|---|
 | not set | IndexedDB ([local.ts](src/storage/local.ts)) | none | this browser only |
-| `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` | Supabase ([supabase.ts](src/storage/supabase.ts)) | email link | Supabase Postgres + Storage |
+| `VITE_SUPABASE_URL` + `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase ([supabase.ts](src/storage/supabase.ts)) | email link | Supabase Postgres + Storage |
 
 Without the env vars everything works offline in one browser, which is handy for development. Browser storage can be cleared by the user, so use Supabase for real data collection.
 
@@ -107,9 +107,9 @@ Without the env vars everything works offline in one browser, which is handy for
    - a private `images` storage bucket.
 3. **Authentication → Sign In / Providers:** make sure **Email** is enabled.
 4. **Authentication → URL Configuration:** add every address the app runs at to **Redirect URLs**, e.g. `http://localhost:5173` and `https://your-app.vercel.app`. Set **Site URL** to the production address.
-5. **Project Settings → API:** copy the project URL and the `anon` (public) key into `.env.local` (see [.env.example](.env.example)).
+5. **Project Settings → API Keys / Data API:** copy the project URL and the **publishable** key (`sb_publishable_…`; older projects call it the `anon` key) into `.env.local` (see [.env.example](.env.example)).
 
-The anon key is safe to expose in the browser. Access control is enforced by the row-level security policies in the migration:
+The publishable key is safe to expose in the browser. **Never** put the secret key (`sb_secret_…`) in a `VITE_` variable: those are bundled into the JavaScript every visitor downloads, and the secret key bypasses all access rules. This app never needs it. Access control is enforced by the row-level security policies in the migration:
 
 - Images are visible to their owner, or to everyone signed in once `shared` is true.
 - Each user reads and writes only their own annotations.
@@ -121,7 +121,7 @@ Supabase's built-in email sender is rate-limited. For a class of students, confi
 
 1. Push this repository to GitHub.
 2. In Vercel: **Add New → Project**, then import the repository. [vercel.json](vercel.json) already sets the build.
-3. Under **Settings → Environment Variables**, add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`, then redeploy.
+3. Under **Settings → Environment Variables**, add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`, then redeploy.
 4. Add the Vercel URL to Supabase's redirect URLs (step 4 above).
 
 Alternatively, `npx vercel` from this folder deploys from the command line. Routing uses the URL hash (`#/library`, `#/image/<id>`), so no rewrite rules are needed.
