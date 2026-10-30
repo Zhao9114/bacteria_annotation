@@ -3,6 +3,8 @@
 
 import { DEFAULT_DISPLAY, type DisplaySettings } from './canvas/filters';
 import type { Viewport } from './canvas/viewport';
+import type { Cell } from './io/schema';
+import type { Draft } from './tools/draw';
 
 export interface LoadedImage {
   filename: string;
@@ -20,6 +22,15 @@ export interface AppState {
   display: DisplaySettings;
   /** Last known cursor position in image pixels, or null when off the canvas. */
   cursor: [number, number] | null;
+  cells: Cell[];
+  nextCellId: number;
+  /** Bumped on every change to `cells`, so views can skip work when nothing changed. */
+  revision: number;
+  /** Cell being added, or null when not drawing. */
+  draft: Draft | null;
+  selectedId: number | null;
+  /** Shade the band between the outer ring and the dark center. */
+  showBand: boolean;
 }
 
 export function createState(): AppState {
@@ -28,6 +39,12 @@ export function createState(): AppState {
     viewport: { scale: 1, tx: 0, ty: 0 },
     display: { ...DEFAULT_DISPLAY },
     cursor: null,
+    cells: [],
+    nextCellId: 1,
+    revision: 0,
+    draft: null,
+    selectedId: null,
+    showBand: true,
   };
 }
 

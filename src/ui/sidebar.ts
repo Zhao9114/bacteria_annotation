@@ -1,6 +1,8 @@
 // Sidebar sections for the annotation screen.
 
 import { DEFAULT_DISPLAY, type Channel, type DisplaySettings } from '../canvas/filters';
+import { INNER_COLOR, OUTER_COLOR } from '../canvas/render';
+import type { AppState } from '../state';
 
 const CHANNEL_LABELS: Record<Channel, string> = {
   rgb: 'Original colours',
@@ -88,4 +90,85 @@ export function mountDisplayControls(
 
   sync();
   return { sync };
+}
+
+// ---------------------------------------------------------------------------
+
+export interface CellPanelCallbacks {
+  onAdd(): void;
+  onSelect(id: number): void;
+  onDelete(id: number): void;
+  onToggleBand(show: boolean): void;
+}
+
+export interface CellPanel {
+  update(state: AppState): void;
+}
+
+export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): CellPanel {
+  container.innerHTML = /* html */ `
+    <h2>Cells</h2>
+    <button class="primary add-cell" data-act="add" title="Mark a new cell: first the outer ring, then the dark center. Shortcut: N">+ Add cell</button>
+    <div class="legend">
+      <span style="--c: ${OUTER_COLOR}">Outer ring</span>
+      <span style="--c: ${INNER_COLOR}">Dark center</span>
+    </div>
+    <label class="check" style="margin-top: 10px" title="Shade the area between the outer ring and the dark center">
+      <input type="checkbox" data-act="band" /> Shade the distance band
+    </label>
+    <ul class="cell-list"></ul>
+  `;
+  const addBtn = container.querySelector<HTMLButtonElement>('[data-act="add"]')!;
+  const band = container.querySelector<HTMLInputElement>('[data-act="band"]')!;
+  const list = container.querySelector<HTMLUListElement>('.cell-list')!;
+
+  addBtn.addEventListener('click', () => cb.onAdd());
+  band.addEventListener('change', () => cb.onToggleBand(band.checked));
+  list.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+    const li = target.closest<HTMLLIElement>('li[data-id]');
+    if (!li) return;
+    const id = Number(li.dataset.id);
+    if (target.closest('[data-act="delete"]')) cb.onDelete(id);
+    else if (target.closest('[data-act="select"]')) cb.onSelect(id);
+  });
+
+  let lastKey = '';
+  function update(state: AppState): void {
+    addBtn.disabled = !state.image || !!state.draft;
+    band.checked = state.showBand;
+
+    const key = `${state.revision}|${state.selectedId}|${!!state.image}`;
+    if (key === lastKey) return;
+    lastKey = key;
+
+    if (state.cells.length === 0) {
+      list.innerHTML = `<li class="empty-list" style="border: 0">${
+        state.image ? 'No cells yet. Click “Add cell” to mark the first one.' : 'Open an image to start.'
+      }</li>`;
+      return;
+    }
+    list.innerHTML = state.cells
+      .map((c) => {
+        const selected = c.id === state.selectedId;
+        return /* html */ `
+        <li data-id="${c.id}" class="${selected ? 'selected' : ''}">
+          <button class="cell-row" data-act="select" title="Select this cell">
+            <span class="name">Cell ${c.id}</span>
+          </button>
+          ${
+            selected
+              ? /* html */ `<div class="cell-detail">
+                  <div class="cell-actions">
+                    <button class="danger" data-act="delete" title="Remove this cell">Delete cell</button>
+                  </div>
+                </div>`
+              : ''
+          }
+        </li>`;
+      })
+      .join('');
+  }
+
+  return { update };
 }

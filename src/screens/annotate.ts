@@ -1,14 +1,25 @@
 // Annotation screen: canvas with zoom/pan, sidebar, status bar.
 
 import { applyDisplayFilters, CHANNELS } from '../canvas/filters';
-import { render } from '../canvas/render';
+import { CLOSE_RADIUS_PX, INNER_COLOR, OUTER_COLOR, render } from '../canvas/render';
 import { fitToWindow, pan, screenToImage, zoomAt, type Point } from '../canvas/viewport';
 import { createState, notify, subscribe, type AppState, type LoadedImage } from '../state';
-import { mountDisplayControls } from '../ui/sidebar';
+import {
+  addPoint,
+  canClose,
+  clampToImage,
+  closePolygon,
+  isNearFirstPoint,
+  removeLastPoint,
+  startDraft,
+} from '../tools/draw';
+import { mountCellPanel, mountDisplayControls } from '../ui/sidebar';
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'];
 /** A left-button press that moves less than this (screen px) is a click, not a pan. */
 const CLICK_SLOP = 4;
+/** A click this close (screen px) to the previous point is ignored rather than added twice. */
+const DUPLICATE_PX = 3;
 
 const TEMPLATE = /* html */ `
 <div class="app">
@@ -27,12 +38,21 @@ const TEMPLATE = /* html */ `
         <div>Drag an image here, or</div>
         <button class="primary" data-ref="openEmpty">Open image…</button>
       </div>
+      <div class="prompt-banner hidden" data-ref="banner">
+        <span class="swatch" data-ref="bannerSwatch"></span>
+        <span class="text" data-ref="bannerText"></span>
+        <button data-ref="bannerUndo" title="Remove the last point you clicked (Backspace)">Undo point</button>
+        <button data-ref="bannerFinish" title="Close this shape (Enter)">Finish shape</button>
+        <button data-ref="bannerCancel" title="Stop adding this cell (Esc)">Cancel</button>
+      </div>
     </div>
     <aside class="sidebar">
+      <section data-ref="cellsSection"></section>
       <section data-ref="displaySection"></section>
     </aside>
   </main>
   <footer class="statusbar">
+    <span data-ref="statusTool"></span>
     <span data-ref="statusZoom"></span>
     <span data-ref="statusCursor"></span>
   </footer>
@@ -47,6 +67,8 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   };
 
   const state: AppState = createState();
+  // Dev-only handle for poking at state from the console and browser tests.
+  if (import.meta.env.DEV) (window as unknown as { __state: AppState }).__state = state;
   const wrap = ref<HTMLDivElement>('wrap');
   const canvas = ref<HTMLCanvasElement>('canvas');
   const ctx = canvas.getContext('2d');
@@ -91,6 +113,12 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       alert(`"${file.name}" is not a supported image. Please use PNG, JPEG, WebP, BMP or GIF.`);
       return;
     }
+    if (
+      (state.cells.length > 0 || state.draft) &&
+      !confirm('Opening another image will discard the cells marked on this one. Continue?')
+    ) {
+      return;
+    }
     let bitmap: ImageBitmap;
     try {
       bitmap = await createImageBitmap(file);
@@ -107,6 +135,11 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     bitmap.close();
     const pixels = dctx.getImageData(0, 0, width, height);
     state.image = { filename: file.name, width, height, pixels, display };
+    state.cells = [];
+    state.nextCellId = 1;
+    state.draft = null;
+    state.selectedId = null;
+    state.revision++;
     refilter();
     fit();
   }
@@ -248,13 +281,102 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     handleClick(screenPoint(e), e.detail);
   });
 
-  function handleClick(_screen: Point, _clickCount: number): void {
-    // Tools hook in here (drawing arrives in milestone 3).
+  function handleClick(screen: Point, clickCount: number): void {
+    const img = state.image!;
+    const d = state.draft;
+    if (d) {
+      // The first click of a double-click already placed a point; the second closes.
+      if (clickCount >= 2) {
+        if (d.points.length > 0) finishShape();
+        return;
+      }
+      const p = clampToImage(screenToImage(state.viewport, screen), img.width, img.height);
+      const last = d.points[d.points.length - 1];
+      const tooClose = last && Math.hypot(p[0] - last[0], p[1] - last[1]) * state.viewport.scale < DUPLICATE_PX;
+      if (isNearFirstPoint(d, p, CLOSE_RADIUS_PX / state.viewport.scale)) finishShape();
+      else if (!tooClose) state.draft = addPoint(d, p);
+      notify();
+    }
+  }
+
+  // ---------- add-cell tool ----------
+  function startAddCell(): void {
+    if (!state.image || state.draft) return;
+    state.draft = startDraft();
+    state.selectedId = null;
+    updateCursorStyle();
+    notify();
+  }
+
+  function finishShape(): void {
+    const d = state.draft;
+    if (!d) return;
+    const result = closePolygon(d);
+    if (!result) {
+      flashBanner();
+      return;
+    }
+    if (result.kind === 'next') {
+      state.draft = result.draft;
+    } else {
+      const id = state.nextCellId++;
+      state.cells.push({ id, outer: result.outer, inner: result.inner, flags: [], note: '' });
+      state.revision++;
+      state.draft = null;
+      state.selectedId = id;
+      updateCursorStyle();
+    }
+    notify();
+  }
+
+  function undoPoint(): void {
+    if (!state.draft) return;
+    state.draft = removeLastPoint(state.draft);
+    notify();
+  }
+
+  function cancelDraft(): void {
+    if (!state.draft) return;
+    state.draft = null;
+    updateCursorStyle();
+    notify();
+  }
+
+  function selectCell(id: number | null): void {
+    state.selectedId = id;
+    notify();
+  }
+
+  function deleteCell(id: number): void {
+    if (!confirm(`Delete cell ${id}? This cannot be undone yet.`)) return;
+    state.cells = state.cells.filter((c) => c.id !== id);
+    if (state.selectedId === id) state.selectedId = null;
+    state.revision++;
+    notify();
   }
 
   function updateCursorStyle(): void {
-    canvas.style.cursor = drag?.panning ? 'grabbing' : spaceDown ? 'grab' : 'default';
+    canvas.style.cursor = drag?.panning ? 'grabbing' : spaceDown ? 'grab' : state.draft ? 'crosshair' : 'default';
   }
+
+  const cellPanel = mountCellPanel(ref('cellsSection'), {
+    onAdd: startAddCell,
+    onSelect: (id) => selectCell(state.selectedId === id ? null : id),
+    onDelete: deleteCell,
+    onToggleBand: (show) => {
+      state.showBand = show;
+      notify();
+    },
+  });
+
+  ref('bannerUndo').addEventListener('click', undoPoint);
+  ref('bannerFinish').addEventListener('click', finishShape);
+  ref('bannerCancel').addEventListener('click', cancelDraft);
+
+  window.addEventListener('beforeunload', (e) => {
+    // Nothing is saved yet (storage arrives in milestone 6), so warn before losing work.
+    if (state.cells.length > 0 || state.draft) e.preventDefault();
+  });
 
   // ---------- keyboard ----------
   window.addEventListener('keydown', (e) => {
@@ -267,7 +389,17 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const key = e.key.toLowerCase();
-    if (key === 'f') fit();
+    if (key === 'enter' && state.draft) {
+      e.preventDefault(); // don't also activate a focused button
+      finishShape();
+    } else if (key === 'escape') {
+      if (state.draft) cancelDraft();
+      else selectCell(null);
+    } else if (key === 'backspace' && state.draft) {
+      e.preventDefault();
+      undoPoint();
+    } else if (key === 'n') startAddCell();
+    else if (key === 'f') fit();
     else if (key === 'g') {
       state.display.channel = CHANNELS[(CHANNELS.indexOf(state.display.channel) + 1) % CHANNELS.length];
       displayControls.sync();
@@ -284,13 +416,53 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   // ---------- chrome (top bar, status bar) ----------
   const filenameEl = ref('filename');
   const emptyHint = ref('emptyHint');
+  const statusTool = ref('statusTool');
   const statusZoom = ref('statusZoom');
   const statusCursor = ref('statusCursor');
+  const banner = ref('banner');
+  const bannerSwatch = ref('bannerSwatch');
+  const bannerText = ref('bannerText');
+  const bannerUndo = ref<HTMLButtonElement>('bannerUndo');
+  const bannerFinish = ref<HTMLButtonElement>('bannerFinish');
+
+  function flashBanner(): void {
+    banner.animate(
+      [{ transform: 'translateX(-50%)' }, { transform: 'translateX(calc(-50% - 8px))' }, { transform: 'translateX(-50%)' }],
+      { duration: 180, iterations: 2 },
+    );
+  }
+
+  function updateBanner(): void {
+    const d = state.draft;
+    banner.classList.toggle('hidden', !d);
+    if (!d) return;
+    const outer = d.phase === 'outer';
+    bannerSwatch.style.background = outer ? OUTER_COLOR : INNER_COLOR;
+    const remaining = Math.max(0, 3 - d.points.length);
+    const how =
+      remaining > 0
+        ? `Place at least ${remaining} more point${remaining === 1 ? '' : 's'}.`
+        : 'To finish, click the first point, double-click, or press Enter.';
+    bannerText.innerHTML = outer
+      ? `<b>Step 1 of 2:</b> Click around the <b>outer ring</b>.<small>${how}</small>`
+      : `<b>Step 2 of 2:</b> Now click around the <b>dark center</b>.<small>${how}</small>`;
+    bannerUndo.disabled = d.points.length === 0;
+    bannerFinish.disabled = !canClose(d);
+  }
 
   function updateChrome(): void {
     const img = state.image;
     filenameEl.textContent = img ? `${img.filename}  (${img.width} × ${img.height})` : '';
     emptyHint.classList.toggle('hidden', !!img);
+    updateBanner();
+    cellPanel.update(state);
+    statusTool.textContent = !img
+      ? ''
+      : state.draft
+        ? state.draft.phase === 'outer'
+          ? 'Adding cell: outer ring'
+          : 'Adding cell: dark center'
+        : 'Ready';
     statusZoom.textContent = img ? `Zoom ${Math.round(state.viewport.scale * 100)}%` : '';
     const c = state.cursor;
     statusCursor.textContent =
@@ -306,9 +478,12 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   updateChrome();
 }
 
+const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'file', 'color']);
+
+/** True when keystrokes should go to a form field rather than the shortcuts. */
 function isTyping(target: EventTarget | null): boolean {
   return (
-    target instanceof HTMLInputElement ||
+    (target instanceof HTMLInputElement && !NON_TEXT_INPUTS.has(target.type)) ||
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLSelectElement ||
     (target instanceof HTMLElement && target.isContentEditable)
