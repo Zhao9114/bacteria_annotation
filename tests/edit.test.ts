@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Polygon } from '../src/io/schema';
-import { deleteVertex, hitEdge, hitVertex, insertVertex, moveVertex } from '../src/tools/edit';
+import { deleteVertex, hitEdge, hitVertex, insertVertex, moveVertex } from '../src/annotation/edit';
 
 const outer: Polygon = [[0, 0], [100, 0], [100, 100], [0, 100]];
 const inner: Polygon = [[40, 40], [60, 40], [60, 60], [40, 60]];

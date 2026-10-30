@@ -104,7 +104,6 @@ export interface CellPanelCallbacks {
 
 /** What the cell list shows. */
 export interface CellListView {
-  hasImage: boolean;
   /** A cell is being drawn (Add cell is disabled meanwhile). */
   drawing: boolean;
   cells: readonly Cell[];
@@ -147,17 +146,15 @@ export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): 
 
   let lastKey = '';
   function update(view: CellListView): void {
-    addBtn.disabled = !view.hasImage || view.drawing;
+    addBtn.disabled = view.drawing;
     band.checked = view.showBand;
 
-    const key = `${view.revision}|${view.selectedId}|${view.hasImage}`;
+    const key = `${view.revision}|${view.selectedId}`;
     if (key === lastKey) return;
     lastKey = key;
 
     if (view.cells.length === 0) {
-      list.innerHTML = `<li class="empty-list">${
-        view.hasImage ? 'No cells yet. Click “Add cell” to mark the first one.' : 'Open an image to start.'
-      }</li>`;
+      list.innerHTML = `<li class="empty-list">No cells yet. Click “Add cell” to mark the first one.</li>`;
       return;
     }
     list.innerHTML = view.cells

@@ -8,13 +8,13 @@ import {
   removeLastPoint,
   startDraft,
   type Draft,
-} from '../src/tools/draw';
+} from '../src/annotation/draft';
 
 function withPoints(d: Draft, pts: [number, number][]): Draft {
   return pts.reduce(addPoint, d);
 }
 
-describe('draw tool', () => {
+describe('draft', () => {
   it('needs three points to close', () => {
     let d = withPoints(startDraft(), [[0, 0], [10, 0]]);
     expect(canClose(d)).toBe(false);
@@ -29,7 +29,7 @@ describe('draw tool', () => {
     const first = closePolygon(withPoints(startDraft(), outer));
     expect(first?.kind).toBe('next');
     if (first?.kind !== 'next') return;
-    expect(first.draft).toEqual({ mode: 'points', phase: 'inner', outer, points: [], stroke: null });
+    expect(first.draft).toEqual({ phase: 'inner', outer, points: [], stroke: null });
 
     const second = closePolygon(withPoints(first.draft, inner));
     expect(second).toEqual({ kind: 'done', outer, inner });

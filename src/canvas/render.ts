@@ -4,14 +4,14 @@
 import type { HoverTarget } from '../annotation/session';
 import type { Cell, Point } from '../io/schema';
 import type { CellMeasurements } from '../measure/measure';
-import type { Draft } from '../tools/draw';
-import type { VertexRef } from '../tools/edit';
+import type { Draft } from '../annotation/draft';
+import type { VertexRef } from '../annotation/edit';
 import { imageToScreen, type Viewport } from './viewport';
 
 /** Everything one frame shows, and nothing else. */
 export interface Scene {
-  /** The (display-filtered) image, or null while it loads. */
-  image: CanvasImageSource | null;
+  /** The (display-filtered) image. */
+  image: CanvasImageSource;
   viewport: Viewport;
   cells: readonly Cell[];
   /** Shade the band between each cell's outer ring and dark center. */
@@ -19,7 +19,12 @@ export interface Scene {
   /** The selected cell and its editing feedback. */
   selection: { cell: Cell; vertex: VertexRef | null; hover: HoverTarget | null; rays: boolean } | null;
   /** The cell being drawn, with the cursor for the rubber band (null for touch, which doesn't hover). */
-  drawing: { draft: Readonly<Draft>; cursor: Point | null; closeRadiusPx: number } | null;
+  drawing: {
+    draft: Readonly<Draft>;
+    cursor: Point | null;
+    /** Screen distance within which a click on the first point closes the outline. */
+    closeRadiusPx: number;
+  } | null;
 }
 
 /** Colourblind-safe pair that reads on green and grey backgrounds. */
@@ -31,14 +36,8 @@ const SELECTED_GLOW = 'rgba(255, 255, 255, 0.95)';
 export const RAY_KEPT_COLOR = '#00e5ff';
 export const RAY_REJECTED_COLOR = '#ff5a36';
 
-/** Screen distance (px) within which a click on the first point closes the shape; larger for fingers. */
-export function closeRadiusPx(pointerType: string): number {
-  return pointerType === 'touch' ? 22 : 10;
-}
-
 export function render(ctx: CanvasRenderingContext2D, scene: Scene, cssW: number, cssH: number): void {
   ctx.clearRect(0, 0, cssW, cssH); // the stage's CSS background shows through
-  if (!scene.image) return;
 
   const v = scene.viewport;
   ctx.save();
@@ -172,7 +171,6 @@ function drawDraft(ctx: CanvasRenderingContext2D, v: Viewport, drawing: NonNulla
     strokeOutlined(ctx, color, 2);
     return;
   }
-  if (d.mode === 'freehand') return;
   const pts = d.points.map((p) => imageToScreen(v, p));
   if (pts.length > 1) {
     tracePathNew(ctx, pts, false);

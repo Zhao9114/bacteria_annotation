@@ -2,7 +2,7 @@
 // Tolerances are in image pixels (callers convert from screen pixels).
 
 import type { Point, Polygon } from '../io/schema';
-import { MIN_POLYGON_POINTS } from './draw';
+import { MIN_POLYGON_POINTS } from './draft';
 
 export type Ring = 'outer' | 'inner';
 

@@ -104,6 +104,21 @@ describe('AnnotationFile', () => {
     expect(file.state).toBe('saved');
   });
 
+  it('leaving during a save still saves the change made meanwhile', async () => {
+    let release!: () => void;
+    lib.saveGate = new Promise((r) => (release = r));
+    const { file } = await open(lib);
+    file.changed(content('in_progress'));
+    await advance(800); // save 1 in flight
+    file.changed(content('done'));
+    const closing = file.close();
+    lib.saveGate = null;
+    release();
+    await closing;
+    expect(lib.saves.map((d) => d.status)).toEqual(['in_progress', 'done']);
+    expect(file.pending).toBe(false);
+  });
+
   it('flush saves now; close flushes and ignores later changes', async () => {
     const { file } = await open(lib);
     file.changed(content());

@@ -1,15 +1,13 @@
-// Guided "add cell" tool: the user clicks around the outer ring, closes it,
-// then clicks around the dark center and closes that. Pure functions over a
-// small draft object; the screen handles input and rendering.
+// The cell being drawn: the outer ring first, then the dark center, each
+// closed once it has enough points. Pure functions over a small draft object.
 
-import type { DrawMode, Point, Polygon } from '../io/schema';
+import type { Point, Polygon } from '../io/schema';
 
 export const MIN_POLYGON_POINTS = 3;
 
 export type DrawPhase = 'outer' | 'inner';
 
 export interface Draft {
-  mode: DrawMode;
   phase: DrawPhase;
   /** Finished outer polygon, set once the first phase closes. */
   outer: Polygon | null;
@@ -23,8 +21,8 @@ export type CloseResult =
   | { kind: 'next'; draft: Draft }
   | { kind: 'done'; outer: Polygon; inner: Polygon };
 
-export function startDraft(mode: DrawMode = 'points'): Draft {
-  return { mode, phase: 'outer', outer: null, points: [], stroke: null };
+export function startDraft(): Draft {
+  return { phase: 'outer', outer: null, points: [], stroke: null };
 }
 
 export function addPoint(d: Draft, p: Point): Draft {

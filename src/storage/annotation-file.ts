@@ -19,9 +19,10 @@ export interface AnnotationFileOptions {
 }
 
 export class AnnotationFile {
-  private latest: AnnotationContent | null = null;
-  private dirty = false;
-  private saving = false;
+  /** The newest content not yet handed to storage. */
+  private unsaved: AnnotationContent | null = null;
+  /** The save in progress, if any. */
+  private inflight: Promise<void> | null = null;
   private failed = false;
   private closed = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -36,7 +37,7 @@ export class AnnotationFile {
     /** The original image file. */
     readonly blob: Blob,
     /** The saved annotation to continue, or null if this user hasn't started one. */
-    readonly initial: (AnnotationContent & { nextCellId: number }) | null,
+    readonly initial: AnnotationContent | null,
     created: string | null,
     private readonly opts: AnnotationFileOptions,
   ) {
@@ -51,12 +52,12 @@ export class AnnotationFile {
   }
 
   get state(): SaveState {
-    return this.failed ? 'failed' : this.saving || this.dirty ? 'saving' : 'saved';
+    return this.failed ? 'failed' : this.pending ? 'saving' : 'saved';
   }
 
   /** True while a change hasn't reached storage yet. */
   get pending(): boolean {
-    return this.dirty || this.saving;
+    return this.unsaved !== null || this.inflight !== null;
   }
 
   onState(fn: (state: SaveState) => void): () => void {
@@ -67,41 +68,21 @@ export class AnnotationFile {
   /** The annotation changed; it will be saved shortly. */
   changed(content: AnnotationContent): void {
     if (this.closed) return;
-    this.latest = content;
-    this.dirty = true;
+    this.unsaved = content;
     if (!this.failed) this.schedule(this.delayMs);
     this.emit();
   }
 
-  /** Save any pending change now. */
+  /** Save any pending change now, after a save already in progress. */
   async flush(): Promise<void> {
     clearTimeout(this.timer);
-    if (!this.dirty || this.saving || !this.latest) return;
-    const content = this.latest;
-    this.dirty = false;
-    this.saving = true;
+    while (this.inflight) await this.inflight;
+    const content = this.unsaved;
+    if (!content) return;
+    this.unsaved = null;
+    this.inflight = this.save(content);
     this.emit();
-    const doc = toDoc(
-      content,
-      { filename: this.record.filename, sha256: this.record.sha256, width: this.record.width, height: this.record.height },
-      this.opts.annotator(),
-      this.created,
-    );
-    try {
-      await this.library.saveAnnotation(this.record.id, doc);
-      this.created = doc.created;
-      this.failed = false;
-    } catch (e) {
-      if (!this.failed) this.opts.onError?.(e as Error);
-      this.failed = true;
-      this.dirty = true; // still needs saving
-      if (!this.closed) this.schedule(this.retryMs);
-    } finally {
-      this.saving = false;
-      // Changes made while this save was in flight get their own save.
-      if (this.dirty && !this.failed && !this.closed) this.schedule(this.delayMs);
-      this.emit();
-    }
+    await this.inflight;
   }
 
   /** Flush, then stop: later changes are ignored. */
@@ -109,6 +90,25 @@ export class AnnotationFile {
     await this.flush();
     this.closed = true;
     clearTimeout(this.timer);
+  }
+
+  private async save(content: AnnotationContent): Promise<void> {
+    const { filename, sha256, width, height } = this.record;
+    try {
+      const doc = toDoc(content, { filename, sha256, width, height }, this.opts.annotator(), this.created);
+      await this.library.saveAnnotation(this.record.id, doc);
+      this.created = doc.created;
+      this.failed = false;
+    } catch (e) {
+      if (!this.failed) this.opts.onError?.(e as Error);
+      this.failed = true;
+      this.unsaved ??= content; // still needs saving, unless something newer came in
+    } finally {
+      this.inflight = null;
+      // Retry a failure; give changes made while this save was in flight their own save.
+      if (this.unsaved && !this.closed) this.schedule(this.failed ? this.retryMs : this.delayMs);
+      this.emit();
+    }
   }
 
   private schedule(ms: number): void {

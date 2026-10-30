@@ -22,7 +22,6 @@ describe('annotation document', () => {
     expect(back.cells).toEqual(cells);
     expect(back.status).toBe('done');
     expect(back.measurement).toEqual(settings);
-    expect(back.nextCellId).toBe(5);
     expect(doc).toMatchObject({ schema_version: 1, image, annotator: 'Dr. Smith', created: doc.modified });
   });
 

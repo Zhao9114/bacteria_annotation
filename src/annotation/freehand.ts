@@ -4,7 +4,7 @@
 
 import type { Point, Polygon } from '../io/schema';
 import { polygonArea } from '../measure/geometry';
-import { clampToImage, MIN_POLYGON_POINTS } from './draw';
+import { clampToImage, MIN_POLYGON_POINTS } from './draft';
 
 const SMOOTH_RADIUS = 2;
 

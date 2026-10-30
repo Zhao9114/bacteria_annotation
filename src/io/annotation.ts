@@ -33,7 +33,7 @@ export function toDoc(
  * Read a stored document. Measurements are recomputed rather than trusted, and
  * fields added after a document was written get their defaults.
  */
-export function fromDoc(doc: AnnotationDoc): AnnotationContent & { nextCellId: number } {
+export function fromDoc(doc: AnnotationDoc): AnnotationContent {
   const measurement = { ...DEFAULT_MEASUREMENT_SETTINGS, ...doc.measurement_settings };
   const cells: Cell[] = doc.cells.map((c) => ({
     id: c.id,
@@ -44,10 +44,5 @@ export function fromDoc(doc: AnnotationDoc): AnnotationContent & { nextCellId: n
     draw_mode: c.draw_mode ?? 'points',
     measurements: measureCell(c.outer, c.inner, measurement),
   }));
-  return {
-    cells,
-    status: doc.status ?? 'in_progress',
-    measurement,
-    nextCellId: cells.reduce((m, c) => Math.max(m, c.id), 0) + 1,
-  };
+  return { cells, status: doc.status ?? 'in_progress', measurement };
 }

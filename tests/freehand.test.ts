@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Point } from '../src/io/schema';
 import { polygonArea } from '../src/measure/geometry';
-import { closeStroke, shouldSample, simplifyPath } from '../src/tools/freehand';
+import { closeStroke, shouldSample, simplifyPath } from '../src/annotation/freehand';
 
 /** A traced circle with deterministic wobble, ending back at its start. */
 function wobblyCircle(cx: number, cy: number, r: number, n: number): Point[] {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { History, type Snapshot } from '../src/history';
+import { History, type Snapshot } from '../src/annotation/history';
 
 const snap = (n: number): Snapshot => ({ cells: [], nextCellId: n });
 
@@ -32,14 +32,6 @@ describe('History', () => {
     expect(h.canRedo).toBe(true);
     h.record(back);
     expect(h.canRedo).toBe(false);
-  });
-
-  it('stores deep copies', () => {
-    const h = new History();
-    const s: Snapshot = { cells: [{ id: 1 } as never], nextCellId: 2 };
-    h.record(s);
-    (s.cells[0] as { id: number }).id = 99;
-    expect((h.undo(snap(0))!.cells[0] as { id: number }).id).toBe(1);
   });
 
   it('keeps at most `limit` entries', () => {

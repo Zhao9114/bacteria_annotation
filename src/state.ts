@@ -17,7 +17,6 @@ export interface LoadedImage {
 }
 
 export interface ViewState {
-  image: LoadedImage | null;
   viewport: Viewport;
   display: DisplaySettings;
   /** Mouse or pen position in image pixels; null when off the canvas or using touch. */
@@ -34,7 +33,6 @@ export interface ViewState {
 
 export function createViewState(): ViewState {
   return {
-    image: null,
     viewport: { scale: 1, tx: 0, ty: 0 },
     display: { ...DEFAULT_DISPLAY },
     cursor: null,

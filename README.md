@@ -167,8 +167,8 @@ Domain terms are defined in [GLOSSARY.md](GLOSSARY.md).
   - [main.ts](src/main.ts): hash router.
   - `src/screens/`: `library.ts`, `annotate.ts`, `signin.ts`.
 - **Annotating**
-  - [annotation/session.ts](src/annotation/session.ts): the annotation session. Cells, the cell being drawn, selection, undo/redo, status and settings behind one interface; every cell re-measured on change. Tested in `tests/session.test.ts`.
-  - Its internals: [draw.ts](src/tools/draw.ts) (point-by-point), [freehand.ts](src/tools/freehand.ts) (stroke → simplified outline), [edit.ts](src/tools/edit.ts) (point hit-testing and edits), [history.ts](src/history.ts) (undo snapshots).
+  - [annotation/session.ts](src/annotation/session.ts): the annotation session. Cells, the cell being drawn, selection, undo/redo, status and settings behind one interface; it decides what a tap or a drag means (place a point, close an outline, select, move or insert a point, trace). Every cell is re-measured on change. Tested in `tests/session.test.ts`.
+  - Its internals, in the same folder: [draft.ts](src/annotation/draft.ts) (the cell being drawn), [freehand.ts](src/annotation/freehand.ts) (trace → simplified outline), [edit.ts](src/annotation/edit.ts) (point hit-testing and edits), [history.ts](src/annotation/history.ts) (undo snapshots).
 - **Input**
   - [input/gestures.ts](src/input/gestures.ts): turns mouse, pen and touch events into taps, double-taps, drags, pans, pinches and hover. Pure; tested with timed event sequences in `tests/gestures.test.ts`.
 - **Canvas**
@@ -181,4 +181,4 @@ Domain terms are defined in [GLOSSARY.md](GLOSSARY.md).
 - **Data and storage**
   - [schema.ts](src/io/schema.ts): annotation format (`schema_version: 1`; all coordinates in original image pixels); [annotation.ts](src/io/annotation.ts): document ↔ content.
   - [storage/store.ts](src/storage/store.ts): the three interfaces a backend provides. `LibraryStore` (images, annotations) and `Account` (the annotator's name) have two adapters each, [local.ts](src/storage/local.ts) (IndexedDB) and [supabase.ts](src/storage/supabase.ts). `Auth` (sign-in) exists only online.
-  - [storage/annotation-file.ts](src/storage/annotation-file.ts): opens an image's annotation and autosaves it (debounce, retry, timestamps). Tested with an in-memory adapter in `tests/annotation-file.test.ts`.
+  - [storage/annotation-file.ts](src/storage/annotation-file.ts): opens an image's annotation and autosaves it (debounce, retry, timestamps; leaving an image waits for a save in progress, then saves the rest). Tested with an in-memory adapter in `tests/annotation-file.test.ts`.
