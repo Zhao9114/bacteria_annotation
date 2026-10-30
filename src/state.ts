@@ -6,6 +6,7 @@ import type { Viewport } from './canvas/viewport';
 import type { Cell } from './io/schema';
 import { DEFAULT_MEASUREMENT_SETTINGS, type MeasurementSettings } from './measure/measure';
 import type { Draft } from './tools/draw';
+import type { EdgeHit, VertexRef } from './tools/edit';
 
 export interface LoadedImage {
   filename: string;
@@ -30,6 +31,10 @@ export interface AppState {
   /** Cell being added, or null when not drawing. */
   draft: Draft | null;
   selectedId: number | null;
+  /** Selected point on the selected cell (Delete removes it). */
+  selectedVertex: VertexRef | null;
+  /** What the cursor is over on the selected cell, for hover feedback. */
+  hover: { vertex: VertexRef | null; edge: EdgeHit | null } | null;
   /** Shade the band between the outer ring and the dark center. */
   showBand: boolean;
   /** Draw the measurement rays of the selected cell. */
@@ -48,6 +53,8 @@ export function createState(): AppState {
     revision: 0,
     draft: null,
     selectedId: null,
+    selectedVertex: null,
+    hover: null,
     showBand: true,
     showRays: true,
     measurement: { ...DEFAULT_MEASUREMENT_SETTINGS },

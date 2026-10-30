@@ -3,6 +3,8 @@
 import { applyDisplayFilters, CHANNELS } from '../canvas/filters';
 import { CLOSE_RADIUS_PX, INNER_COLOR, OUTER_COLOR, render } from '../canvas/render';
 import { fitToWindow, pan, screenToImage, zoomAt, type Point } from '../canvas/viewport';
+import { History, type Snapshot } from '../history';
+import type { Cell } from '../io/schema';
 import { pointInPolygon } from '../measure/geometry';
 import { measureCell } from '../measure/measure';
 import { createState, notify, subscribe, type AppState, type LoadedImage } from '../state';
@@ -15,6 +17,7 @@ import {
   removeLastPoint,
   startDraft,
 } from '../tools/draw';
+import { deleteVertex, hitEdge, hitVertex, insertVertex, moveVertex, type Ring } from '../tools/edit';
 import { icon } from '../ui/icons';
 import { mountCellPanel, mountDisplayControls, mountMeasurementControls } from '../ui/sidebar';
 import { toast } from '../ui/toast';
@@ -24,6 +27,8 @@ const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'i
 const CLICK_SLOP = 4;
 /** A click this close (screen px) to the previous point is ignored rather than added twice. */
 const DUPLICATE_PX = 3;
+/** Grab radius (screen px) for points and edges of the selected cell. */
+const HANDLE_PX = 8;
 const ZOOM_STEP = 1.25;
 
 const TEMPLATE = /* html */ `
@@ -49,6 +54,9 @@ const TEMPLATE = /* html */ `
       <div class="toolbar glass hidden" data-ref="toolbar">
         <button class="ghost icon-btn" data-ref="toolSelect" title="Select cells and move the image (Esc)">${icon('pointer')}</button>
         <button class="ghost" data-ref="toolAdd" title="Add a cell (N)">${icon('plus')} Add cell</button>
+        <span class="sep"></span>
+        <button class="ghost icon-btn" data-ref="undo" title="Undo (Ctrl+Z)">${icon('undo')}</button>
+        <button class="ghost icon-btn" data-ref="redo" title="Redo (Ctrl+Shift+Z)">${icon('redo')}</button>
         <span class="sep"></span>
         <button class="ghost icon-btn" data-ref="zoomOut" title="Zoom out (or scroll)">${icon('zoomOut')}</button>
         <span class="zoom" data-ref="zoomLabel"></span>
@@ -97,6 +105,36 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2D canvas not supported');
   const fileInput = ref<HTMLInputElement>('fileInput');
+
+  // ---------- undo / redo ----------
+  const history = new History();
+  const snapshot = (): Snapshot => ({ cells: state.cells, nextCellId: state.nextCellId });
+  /** Call before every change to the cells. */
+  const recordUndo = () => history.record(snapshot());
+
+  function restore(s: Snapshot | null): void {
+    if (!s) return;
+    state.cells = s.cells;
+    state.nextCellId = s.nextCellId;
+    // Settings may have changed since the snapshot was taken.
+    for (const c of state.cells) c.measurements = measureCell(c.outer, c.inner, state.measurement);
+    if (!state.cells.some((c) => c.id === state.selectedId)) state.selectedId = null;
+    state.selectedVertex = null;
+    state.hover = null;
+    state.revision++;
+    notify();
+  }
+  const undo = () => (state.draft ? undoPoint() : restore(history.undo(snapshot())));
+  const redo = () => restore(history.redo(snapshot()));
+
+  /** Apply `change` to a cell's outlines, then re-measure it. */
+  function updateCell(id: number, change: (c: Cell) => void): void {
+    const c = state.cells.find((x) => x.id === id);
+    if (!c) return;
+    change(c);
+    c.measurements = measureCell(c.outer, c.inner, state.measurement);
+    state.revision++;
+  }
 
   // ---------- canvas sizing + redraw ----------
   let cssW = 0;
@@ -168,7 +206,9 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     state.nextCellId = 1;
     state.draft = null;
     state.selectedId = null;
+    state.selectedVertex = null;
     state.revision++;
+    history.clear();
     refilter();
     fit();
   }
@@ -263,19 +303,57 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   let drag: { id: number; startX: number; startY: number; lastX: number; lastY: number; panning: boolean } | null =
     null;
   let suppressClick = false;
+  /** Point of the selected cell being dragged; `moved` defers the undo entry until it actually moves. */
+  let vertexDrag: { id: number; ring: Ring; index: number; moved: boolean } | null = null;
 
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 && e.button !== 1) return;
     if (e.button === 1) e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
     const [x, y] = screenPoint(e);
+    if (e.button === 0 && !spaceDown && startVertexDrag([x, y])) return;
     drag = { id: e.pointerId, startX: x, startY: y, lastX: x, lastY: y, panning: e.button === 1 || spaceDown };
     updateCursorStyle();
   });
 
+  /** Grab a point of the selected cell, or press on an edge to add one there. */
+  function startVertexDrag(screen: Point): boolean {
+    const cell = state.cells.find((c) => c.id === state.selectedId);
+    if (!cell || state.draft || !state.image) return false;
+    const p = screenToImage(state.viewport, screen);
+    const tol = HANDLE_PX / state.viewport.scale;
+    const v = hitVertex(cell, p, tol);
+    if (v) {
+      vertexDrag = { id: cell.id, ...v, moved: false };
+      state.selectedVertex = v;
+      notify();
+      return true;
+    }
+    const edge = hitEdge(cell, p, tol);
+    if (edge) {
+      recordUndo();
+      updateCell(cell.id, (c) => (c[edge.ring] = insertVertex(c[edge.ring], edge.index, edge.point)));
+      vertexDrag = { id: cell.id, ring: edge.ring, index: edge.index + 1, moved: true };
+      state.selectedVertex = { ring: edge.ring, index: edge.index + 1 };
+      state.hover = null;
+      notify();
+      return true;
+    }
+    return false;
+  }
+
   canvas.addEventListener('pointermove', (e) => {
     const p = screenPoint(e);
-    if (drag && drag.id === e.pointerId) {
+    if (vertexDrag) {
+      const img = state.image!;
+      const ip = clampToImage(screenToImage(state.viewport, p), img.width, img.height);
+      if (!vertexDrag.moved) {
+        recordUndo();
+        vertexDrag.moved = true;
+      }
+      const { ring, index } = vertexDrag;
+      updateCell(vertexDrag.id, (c) => (c[ring] = moveVertex(c[ring], index, ip)));
+    } else if (drag && drag.id === e.pointerId) {
       if (!drag.panning && Math.hypot(p[0] - drag.startX, p[1] - drag.startY) > CLICK_SLOP) {
         drag.panning = true;
         updateCursorStyle();
@@ -287,10 +365,29 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       drag.lastY = p[1];
     }
     state.cursor = state.image ? screenToImage(state.viewport, p) : null;
+    updateHover();
     notify();
   });
 
+  function updateHover(): void {
+    const cell = state.cells.find((c) => c.id === state.selectedId);
+    if (!cell || !state.cursor || state.draft || drag || vertexDrag) {
+      state.hover = null;
+    } else {
+      const tol = HANDLE_PX / state.viewport.scale;
+      const vertex = hitVertex(cell, state.cursor, tol);
+      state.hover = { vertex, edge: vertex ? null : hitEdge(cell, state.cursor, tol) };
+    }
+    updateCursorStyle();
+  }
+
   const endDrag = (e: PointerEvent) => {
+    if (vertexDrag) {
+      vertexDrag = null;
+      suppressClick = true;
+      updateCursorStyle();
+      return;
+    }
     if (!drag || drag.id !== e.pointerId) return;
     suppressClick = drag.panning;
     drag = null;
@@ -330,6 +427,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       return;
     }
     selectCell(cellAt(screenToImage(state.viewport, screen)));
+    updateHover();
   }
 
   /** The cell whose outer ring contains `p`; the smallest one if they overlap. */
@@ -363,6 +461,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     if (result.kind === 'next') {
       state.draft = result.draft;
     } else {
+      recordUndo();
       const id = state.nextCellId++;
       state.cells.push({
         id,
@@ -395,20 +494,53 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   }
 
   function selectCell(id: number | null): void {
+    if (id !== state.selectedId) state.selectedVertex = null;
     state.selectedId = id;
     notify();
   }
 
   function deleteCell(id: number): void {
-    if (!confirm(`Delete cell ${id}? This cannot be undone yet.`)) return;
+    if (!confirm(`Delete cell ${id}? You can bring it back with Undo.`)) return;
+    recordUndo();
     state.cells = state.cells.filter((c) => c.id !== id);
     if (state.selectedId === id) state.selectedId = null;
+    state.selectedVertex = null;
     state.revision++;
     notify();
   }
 
+  /** Delete key: the selected point if there is one, otherwise the selected cell. */
+  function deleteSelection(): void {
+    const id = state.selectedId;
+    if (id === null) return;
+    const sv = state.selectedVertex;
+    if (!sv) {
+      deleteCell(id);
+      return;
+    }
+    const cell = state.cells.find((c) => c.id === id)!;
+    const next = deleteVertex(cell[sv.ring], sv.index);
+    if (!next) {
+      toast('An outline needs at least 3 points. Delete the whole cell instead.', 'error');
+      return;
+    }
+    recordUndo();
+    updateCell(id, (c) => (c[sv.ring] = next));
+    state.selectedVertex = null;
+    notify();
+  }
+
   function updateCursorStyle(): void {
-    canvas.style.cursor = drag?.panning ? 'grabbing' : spaceDown ? 'grab' : state.draft ? 'crosshair' : 'default';
+    canvas.style.cursor =
+      drag?.panning
+        ? 'grabbing'
+        : vertexDrag || state.hover?.vertex
+          ? 'move'
+          : spaceDown
+            ? 'grab'
+            : state.draft || state.hover?.edge
+              ? 'crosshair'
+              : 'default';
   }
 
   const cellPanel = mountCellPanel(ref('cellsSection'), {
@@ -433,6 +565,8 @@ export function mountAnnotateScreen(root: HTMLElement): void {
 
   ref('toolSelect').addEventListener('click', () => cancelDraft());
   ref('toolAdd').addEventListener('click', startAddCell);
+  ref('undo').addEventListener('click', undo);
+  ref('redo').addEventListener('click', redo);
   ref('bannerUndo').addEventListener('click', undoPoint);
   ref('bannerFinish').addEventListener('click', finishShape);
   ref('bannerCancel').addEventListener('click', cancelDraft);
@@ -451,17 +585,30 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       e.preventDefault();
       return;
     }
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const key = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      if (key === 'z' && !e.shiftKey) undo();
+      else if ((key === 'z' && e.shiftKey) || key === 'y') redo();
+      else return;
+      e.preventDefault();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (key === 'enter' && state.draft) {
       e.preventDefault(); // don't also activate a focused button
       finishShape();
     } else if (key === 'escape') {
       if (state.draft) cancelDraft();
-      else selectCell(null);
+      else if (state.selectedVertex) {
+        state.selectedVertex = null;
+        notify();
+      } else selectCell(null);
     } else if (key === 'backspace' && state.draft) {
       e.preventDefault();
       undoPoint();
+    } else if (key === 'delete' || key === 'backspace') {
+      e.preventDefault();
+      deleteSelection();
     } else if (key === 'n') startAddCell();
     else if (key === 'r') {
       state.showRays = !state.showRays;
@@ -488,6 +635,8 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   const toolSelect = ref('toolSelect');
   const toolAdd = ref<HTMLButtonElement>('toolAdd');
   const zoomLabel = ref('zoomLabel');
+  const undoBtn = ref<HTMLButtonElement>('undo');
+  const redoBtn = ref<HTMLButtonElement>('redo');
   const hud = ref('hud');
   const cellCount = ref('cellCount');
   const banner = ref('banner');
@@ -530,6 +679,8 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     toolSelect.classList.toggle('active', !state.draft);
     toolAdd.classList.toggle('active', !!state.draft);
     zoomLabel.textContent = `${Math.round(state.viewport.scale * 100)}%`;
+    undoBtn.disabled = !history.canUndo && !(state.draft && state.draft.points.length > 0);
+    redoBtn.disabled = !history.canRedo;
     cellCount.textContent = String(state.cells.length);
     updateBanner();
     cellPanel.update(state);

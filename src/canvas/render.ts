@@ -40,6 +40,7 @@ export function render(ctx: CanvasRenderingContext2D, state: AppState, cssW: num
   }
   const selected = state.cells.find((c) => c.id === state.selectedId);
   if (selected && state.showRays) drawRays(ctx, v, selected.measurements);
+  if (selected) drawHandles(ctx, v, selected, state);
   drawDraft(ctx, state);
 }
 
@@ -65,10 +66,6 @@ function drawCell(ctx: CanvasRenderingContext2D, v: Viewport, cell: Cell, select
   tracePathNew(ctx, inner, true);
   strokeOutlined(ctx, INNER_COLOR, width);
 
-  if (selected) {
-    for (const p of outer) drawVertex(ctx, p, OUTER_COLOR, 3.5);
-    for (const p of inner) drawVertex(ctx, p, INNER_COLOR, 3.5);
-  }
 
   const m = cell.measurements;
   const gap = m.gap_median === null ? '?' : `${m.gap_median.toFixed(1)} px`;
@@ -107,6 +104,38 @@ function drawRays(ctx: CanvasRenderingContext2D, v: Viewport, m: CellMeasurement
   ctx.moveTo(center[0], center[1] - 6);
   ctx.lineTo(center[0], center[1] + 6);
   strokeOutlined(ctx, '#ffffff', 1.5);
+}
+
+/** Editable points of the selected cell, plus hover and selection feedback. */
+function drawHandles(ctx: CanvasRenderingContext2D, v: Viewport, cell: Cell, state: AppState): void {
+  const hv = state.hover?.vertex;
+  const sv = state.selectedVertex;
+  for (const ring of ['outer', 'inner'] as const) {
+    const color = ring === 'outer' ? OUTER_COLOR : INNER_COLOR;
+    cell[ring].forEach((p, i) => {
+      const s = imageToScreen(v, p);
+      const isHover = hv?.ring === ring && hv.index === i;
+      const isSel = sv?.ring === ring && sv.index === i;
+      drawVertex(ctx, s, color, isHover || isSel ? 5.5 : 3.5);
+      if (isSel) {
+        ctx.beginPath();
+        ctx.arc(s[0], s[1], 9, 0, Math.PI * 2);
+        strokeOutlined(ctx, '#ffffff', 1.5);
+      }
+    });
+  }
+  const edge = state.hover?.edge;
+  if (edge && !hv) {
+    // Ghost point where a click would insert a new one.
+    const s = imageToScreen(v, edge.point);
+    ctx.beginPath();
+    ctx.arc(s[0], s[1], 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = UNDERLAY;
+    ctx.stroke();
+  }
 }
 
 function drawDraft(ctx: CanvasRenderingContext2D, state: AppState): void {
