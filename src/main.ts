@@ -5,7 +5,7 @@ import { mountSignInScreen } from './screens/signin';
 import { createStore } from './storage';
 import type { Store } from './storage/store';
 import { toast } from './ui/toast';
-import { openUserDialog } from './ui/user';
+import { openNewPasswordDialog, openUserDialog } from './ui/user';
 
 // Hash routes (no server rewrites needed on static hosting):
 //   #/library          image library (default)
@@ -52,6 +52,7 @@ async function start(): Promise<void> {
   window.addEventListener('hashchange', () => route(store));
   store.onAuthChange(() => route(store));
   route(store);
+  if (store.passwordRecovery) void openNewPasswordDialog(store);
 }
 
 window.addEventListener('unhandledrejection', (e) => toast(`Something went wrong: ${e.reason?.message ?? e.reason}`, 'error'));

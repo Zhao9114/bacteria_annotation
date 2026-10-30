@@ -81,3 +81,50 @@ export function openUserDialog(store: Store, opts: { required?: boolean } = {}):
     input.focus();
   });
 }
+
+/** Shown after following a password-reset link: choose a new password. */
+export function openNewPasswordDialog(store: Store): Promise<void> {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'modal';
+  dialog.innerHTML = /* html */ `
+    <form method="dialog">
+      <h2>Choose a new password</h2>
+      <label class="muted" style="display:flex;flex-direction:column;gap:6px">
+        New password
+        <input type="password" name="password" required minlength="6" autocomplete="new-password" placeholder="At least 6 characters" />
+      </label>
+      <label class="muted" style="display:flex;flex-direction:column;gap:6px">
+        Repeat it
+        <input type="password" name="repeat" required minlength="6" autocomplete="new-password" />
+      </label>
+      <div class="actions">
+        <button type="button" data-act="cancel">Not now</button>
+        <button class="primary" value="save">Save password</button>
+      </div>
+    </form>`;
+  document.body.append(dialog);
+  const [pw, repeat] = dialog.querySelectorAll<HTMLInputElement>('input');
+
+  return new Promise((resolve) => {
+    const close = () => {
+      dialog.close();
+      dialog.remove();
+      resolve();
+    };
+    dialog.querySelector('[data-act="cancel"]')!.addEventListener('click', close);
+    dialog.querySelector('form')!.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (pw.value.length < 6) return toast('Please choose a password with at least 6 characters.', 'error');
+      if (pw.value !== repeat.value) return toast('The two passwords are different.', 'error');
+      try {
+        await store.setPassword(pw.value);
+        toast('Password changed.');
+        close();
+      } catch (err) {
+        toast((err as Error).message, 'error');
+      }
+    });
+    dialog.showModal();
+    pw.focus();
+  });
+}

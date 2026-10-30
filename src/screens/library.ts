@@ -102,6 +102,8 @@ export function mountLibraryScreen(root: HTMLElement, store: Store): () => void 
   }
 
   function draw(): void {
+    // Async work (loading, uploads) can finish after the user has left this screen.
+    if (signal.aborted) return;
     for (const b of scopeSwitch.querySelectorAll<HTMLElement>('[data-scope]')) {
       b.classList.toggle('active', b.dataset.scope === scope);
     }

@@ -218,6 +218,7 @@ select,
 input[type='number'],
 input[type='text'],
 input[type='email'],
+input[type='password'],
 input[type='search'] {
   width: 100%;
   min-height: 32px;
@@ -883,4 +884,25 @@ dialog.modal .actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.segmented.full {
+  display: flex;
+}
+.segmented.full button {
+  flex: 1;
+}
+.or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.or::before,
+.or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-strong);
 }

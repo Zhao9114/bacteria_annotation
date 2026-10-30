@@ -49,9 +49,28 @@ function toRecord(r: ImageRow): ImageRecord {
 
 function toUser(u: AuthUser | null | undefined): User | null {
   if (!u) return null;
-  const name = (u.user_metadata?.display_name as string | undefined)?.trim();
-  return { id: u.id, email: u.email ?? null, displayName: name || null };
+  // display_name is ours; Google fills in full_name / name.
+  const meta = u.user_metadata ?? {};
+  const name = [meta.display_name, meta.full_name, meta.name].find((n) => typeof n === 'string' && n.trim()) as
+    | string
+    | undefined;
+  return { id: u.id, email: u.email ?? null, displayName: name?.trim() || null };
 }
+
+/** Supabase auth messages, reworded for annotators. */
+function authError(message: string): Error {
+  const m = message.toLowerCase();
+  if (m.includes('invalid login credentials')) return new Error('Wrong email or password.');
+  if (m.includes('email not confirmed')) return new Error('Please confirm your email first: check your inbox for the link.');
+  if (m.includes('already registered')) return new Error('An account with this email already exists. Sign in instead.');
+  if (m.includes('password should be')) return new Error('Please choose a password with at least 6 characters.');
+  if (m.includes('rate limit')) return new Error('Too many emails were sent recently. Please wait a while and try again.');
+  return new Error(message);
+}
+
+/** Where Supabase sends people back to after Google or an email link. */
+const appUrl = () => location.origin + location.pathname;
+const RESET_PARAM = 'reset';
 
 /**
  * Turn a Supabase error result into a thrown Error with a readable message.
@@ -65,17 +84,31 @@ function check<T>(res: { data?: T | null; error: { message: string } | null }): 
 export class SupabaseStore implements Store {
   readonly kind = 'supabase';
   private user: User | null = null;
+  passwordRecovery = false;
 
-  private constructor(private readonly sb: SupabaseClient) {}
+  private constructor(
+    private readonly sb: SupabaseClient,
+    private readonly url: string,
+    private readonly key: string,
+  ) {}
 
   static async create(url: string, anonKey: string): Promise<SupabaseStore> {
+    // A password-reset link comes back with ?reset=1 (see sendPasswordReset).
+    const params = new URLSearchParams(location.search);
+    const recovery = params.has(RESET_PARAM);
     const sb = createClient(url, anonKey, {
       auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true },
     });
-    const store = new SupabaseStore(sb);
-    // Resolves after any sign-in link in the URL has been exchanged for a session.
+    const store = new SupabaseStore(sb, url, anonKey);
+    // Resolves after a Google or email-link return has been exchanged for a session.
     const { data } = await sb.auth.getSession();
     store.user = toUser(data.session?.user);
+    store.passwordRecovery = recovery && !!store.user;
+    if (recovery) {
+      params.delete(RESET_PARAM);
+      const q = params.toString();
+      history.replaceState(null, '', location.pathname + (q ? `?${q}` : '') + location.hash);
+    }
     return store;
   }
 
@@ -90,13 +123,51 @@ export class SupabaseStore implements Store {
     return this.user;
   }
 
-  async signIn(email: string): Promise<void> {
-    check(
-      await this.sb.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: location.origin + location.pathname },
-      }),
-    );
+  // The signed-in user is picked up by the onAuthStateChange listener below,
+  // which also tells the router to switch screens.
+
+  async signInWithPassword(email: string, password: string): Promise<void> {
+    const { error } = await this.sb.auth.signInWithPassword({ email, password });
+    if (error) throw authError(error.message);
+  }
+
+  async signUp(name: string, email: string, password: string): Promise<'signed_in' | 'confirm_email'> {
+    const { data, error } = await this.sb.auth.signUp({
+      email,
+      password,
+      options: { data: { display_name: name }, emailRedirectTo: appUrl() },
+    });
+    if (error) throw authError(error.message);
+    // With email confirmation on, an existing address comes back with no identities
+    // (Supabase hides whether the account exists); say so instead of "check your email".
+    if (data.user && data.user.identities?.length === 0) throw authError('already registered');
+    return data.session ? 'signed_in' : 'confirm_email';
+  }
+
+  async signInWithGoogle(): Promise<void> {
+    const { error } = await this.sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: appUrl() } });
+    if (error) throw authError(error.message);
+  }
+
+  async sendPasswordReset(email: string): Promise<void> {
+    const { error } = await this.sb.auth.resetPasswordForEmail(email, { redirectTo: `${appUrl()}?${RESET_PARAM}=1` });
+    if (error) throw authError(error.message);
+  }
+
+  async setPassword(password: string): Promise<void> {
+    const { error } = await this.sb.auth.updateUser({ password });
+    if (error) throw authError(error.message);
+    this.passwordRecovery = false;
+  }
+
+  async authProviders(): Promise<{ google: boolean }> {
+    try {
+      const res = await fetch(`${this.url}/auth/v1/settings`, { headers: { apikey: this.key } });
+      const settings = (await res.json()) as { external?: Record<string, boolean> };
+      return { google: !!settings.external?.google };
+    } catch {
+      return { google: false };
+    }
   }
 
   async signOut(): Promise<void> {
@@ -112,11 +183,11 @@ export class SupabaseStore implements Store {
   }
 
   onAuthChange(fn: () => void): () => void {
-    const { data } = this.sb.auth.onAuthStateChange((event, session) => {
+    const { data } = this.sb.auth.onAuthStateChange((_event, session) => {
       const before = this.user?.id ?? null;
       this.user = toUser(session?.user);
-      // Token refreshes and the initial event don't change who is signed in.
-      if (event === 'SIGNED_OUT' || (event === 'SIGNED_IN' && before !== this.user?.id)) fn();
+      // Only re-route when the person changes (sign in / out), not on token refreshes.
+      if (before !== (this.user?.id ?? null)) fn();
     });
     return () => data.subscription.unsubscribe();
   }

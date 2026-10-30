@@ -56,7 +56,18 @@ export class LocalStore implements Store {
   currentUser(): User {
     return { id: 'local', email: null, displayName: localStorage.getItem(NAME_KEY) };
   }
-  async signIn(): Promise<void> {}
+  // There is nobody to sign in as in the browser-only version.
+  readonly passwordRecovery = false;
+  async signInWithPassword(): Promise<void> {}
+  async signUp(): Promise<'signed_in'> {
+    return 'signed_in';
+  }
+  async signInWithGoogle(): Promise<void> {}
+  async sendPasswordReset(): Promise<void> {}
+  async setPassword(): Promise<void> {}
+  async authProviders(): Promise<{ google: boolean }> {
+    return { google: false };
+  }
   async signOut(): Promise<void> {}
   async setDisplayName(name: string): Promise<void> {
     localStorage.setItem(NAME_KEY, name);

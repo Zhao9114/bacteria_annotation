@@ -51,8 +51,18 @@ export interface Store {
   readonly kind: 'local' | 'supabase';
 
   currentUser(): User | null;
-  /** Supabase: email a sign-in link. */
-  signIn(email: string): Promise<void>;
+  signInWithPassword(email: string, password: string): Promise<void>;
+  /** 'confirm_email' when the project requires confirming the address before the first sign-in. */
+  signUp(name: string, email: string, password: string): Promise<'signed_in' | 'confirm_email'>;
+  /** Redirects the browser to Google and back. */
+  signInWithGoogle(): Promise<void>;
+  /** Emails a link that brings the user back to choose a new password. */
+  sendPasswordReset(email: string): Promise<void>;
+  setPassword(password: string): Promise<void>;
+  /** True right after arriving from a password-reset link. */
+  readonly passwordRecovery: boolean;
+  /** Which optional sign-in methods are switched on for this project. */
+  authProviders(): Promise<{ google: boolean }>;
   signOut(): Promise<void>;
   setDisplayName(name: string): Promise<void>;
   onAuthChange(fn: () => void): () => void;

@@ -9,8 +9,12 @@ A web app for marking bacteria cells in microscope photos and measuring the dist
 ### Getting started
 
 1. Open the app link you were given.
-2. **Online version:** type your email and click **Email me a sign-in link**. Open the email on the same computer and click the link. No password is needed.
-3. The first time, enter your name. It is saved with every cell you mark.
+2. **Online version:** sign in in one of two ways:
+   - **Email and password.** The first time, choose **Create account** and enter your name, email and a password (at least 6 characters). If the app asks you to confirm your email, click the link in that email, then sign in.
+   - **Continue with Google**, if the button is shown. This uses your Google account; no new password is needed.
+3. Your name is saved with every cell you mark. You can change it from the name button in the top-right corner.
+
+Forgot your password? Type your email on the sign-in page and click **Forgot password?**. Open the email on the same computer, click the link, and choose a new password.
 
 ### Adding images
 
@@ -94,7 +98,7 @@ The app chooses its storage when it is built ([src/storage/index.ts](src/storage
 | Env vars | Backend | Sign-in | Where data lives |
 |---|---|---|---|
 | not set | IndexedDB ([local.ts](src/storage/local.ts)) | none | this browser only |
-| `VITE_SUPABASE_URL` + `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase ([supabase.ts](src/storage/supabase.ts)) | email link | Supabase Postgres + Storage |
+| `VITE_SUPABASE_URL` + `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase ([supabase.ts](src/storage/supabase.ts)) | email + password, optional Google | Supabase Postgres + Storage |
 
 Without the env vars everything works offline in one browser, which is handy for development. Browser storage can be cleared by the user, so use Supabase for real data collection.
 
@@ -105,8 +109,10 @@ Without the env vars everything works offline in one browser, which is handy for
    - the `images` and `annotations` tables;
    - row-level security policies;
    - a private `images` storage bucket.
-3. **Authentication → Sign In / Providers:** make sure **Email** is enabled.
-4. **Authentication → URL Configuration:** add every address the app runs at to **Redirect URLs**, e.g. `http://localhost:5173` and `https://your-app.vercel.app`. Set **Site URL** to the production address.
+3. **Authentication → Sign In / Providers → Email:** make sure it is enabled.
+   - **Confirm email** on (the default): new accounts must click a confirmation link before signing in.
+   - **Confirm email** off: people can sign in straight after creating an account, and no sign-up emails are sent. This is simpler for a class, but anyone with the app link can create an account with any address.
+4. **Authentication → URL Configuration:** add every address the app runs at to **Redirect URLs**, e.g. `http://localhost:5173`, `http://localhost:5179` and `https://your-app.vercel.app`. Set **Site URL** to the production address. Google sign-in, password-reset links and confirmation links only return to addresses on this list.
 5. **Project Settings → API Keys / Data API:** copy the project URL and the **publishable** key (`sb_publishable_…`; older projects call it the `anon` key) into `.env.local` (see [.env.example](.env.example)).
 
 The publishable key is safe to expose in the browser. **Never** put the secret key (`sb_secret_…`) in a `VITE_` variable: those are bundled into the JavaScript every visitor downloads, and the secret key bypasses all access rules. This app never needs it. Access control is enforced by the row-level security policies in the migration:
@@ -115,7 +121,25 @@ The publishable key is safe to expose in the browser. **Never** put the secret k
 - Each user reads and writes only their own annotations.
 - An image's owner can also read others' annotations of that image.
 
-Supabase's built-in email sender is rate-limited. For a class of students, configure a custom SMTP provider under **Authentication → Emails**.
+Supabase's built-in email sender is rate-limited to a few emails per hour. That limit covers confirmation and password-reset emails. For a class of students, configure a custom SMTP provider under **Authentication → Emails**, or turn **Confirm email** off.
+
+### Turning on "Continue with Google" (optional)
+
+The Google button appears on the sign-in page automatically once Google is enabled in Supabase.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create or pick a project.
+2. **APIs & Services → OAuth consent screen:**
+   - Choose **External**.
+   - Fill in the app name and support email.
+   - Add the scopes `openid`, `.../auth/userinfo.email` and `.../auth/userinfo.profile`.
+   - Publish the app. Without publishing, only the test users you list can sign in.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID:**
+   - Application type: **Web application**.
+   - **Authorized JavaScript origins:** every address the app runs at, e.g. `http://localhost:5179` and `https://your-app.vercel.app`.
+   - **Authorized redirect URIs:** `https://<your-project-ref>.supabase.co/auth/v1/callback`. Supabase shows this exact URL on its Google provider page.
+4. Copy the **Client ID** and **Client secret** into Supabase: **Authentication → Sign In / Providers → Google**, then enable it and save.
+
+A Google user's display name comes from their Google profile. If someone uses Google once and email + password once with the same address, Supabase links them to the same account.
 
 ### Deploying to Vercel
 
