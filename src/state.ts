@@ -4,6 +4,7 @@
 import { DEFAULT_DISPLAY, type DisplaySettings } from './canvas/filters';
 import type { Viewport } from './canvas/viewport';
 import type { Cell } from './io/schema';
+import { DEFAULT_MEASUREMENT_SETTINGS, type MeasurementSettings } from './measure/measure';
 import type { Draft } from './tools/draw';
 
 export interface LoadedImage {
@@ -31,6 +32,9 @@ export interface AppState {
   selectedId: number | null;
   /** Shade the band between the outer ring and the dark center. */
   showBand: boolean;
+  /** Draw the measurement rays of the selected cell. */
+  showRays: boolean;
+  measurement: MeasurementSettings;
 }
 
 export function createState(): AppState {
@@ -45,6 +49,8 @@ export function createState(): AppState {
     draft: null,
     selectedId: null,
     showBand: true,
+    showRays: true,
+    measurement: { ...DEFAULT_MEASUREMENT_SETTINGS },
   };
 }
 

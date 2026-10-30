@@ -2,6 +2,7 @@
 // screen space so line widths and labels keep a constant on-screen size.
 
 import type { Cell, Point } from '../io/schema';
+import type { CellMeasurements } from '../measure/measure';
 import type { AppState } from '../state';
 import { imageToScreen, type Viewport } from './viewport';
 
@@ -11,6 +12,8 @@ export const INNER_COLOR = '#ffd400';
 const UNDERLAY = 'rgba(0, 0, 0, 0.8)';
 const BAND_FILL = 'rgba(0, 190, 255, 0.28)';
 const SELECTED_GLOW = 'rgba(255, 255, 255, 0.95)';
+export const RAY_KEPT_COLOR = '#00e5ff';
+export const RAY_REJECTED_COLOR = '#ff5a36';
 
 /** Screen distance (px) within which a click on the first point closes the shape. */
 export const CLOSE_RADIUS_PX = 10;
@@ -36,6 +39,8 @@ export function render(ctx: CanvasRenderingContext2D, state: AppState, cssW: num
   for (const cell of state.cells) {
     drawCell(ctx, v, cell, cell.id === state.selectedId, state.showBand);
   }
+  const selected = state.cells.find((c) => c.id === state.selectedId);
+  if (selected && state.showRays) drawRays(ctx, v, selected.measurements);
   drawDraft(ctx, state);
 }
 
@@ -66,7 +71,43 @@ function drawCell(ctx: CanvasRenderingContext2D, v: Viewport, cell: Cell, select
     for (const p of inner) drawVertex(ctx, p, INNER_COLOR, 3.5);
   }
 
-  drawLabel(ctx, outer, `${cell.id}`);
+  const m = cell.measurements;
+  const gap = m.gap_median === null ? '?' : `${m.gap_median.toFixed(1)} px`;
+  drawLabel(ctx, outer, `${m.inner_inside_outer ? '' : '⚠ '}${cell.id} · ${gap}`);
+}
+
+/** Measurement rays: faint spoke to the dark-center edge, then the measured gap. */
+function drawRays(ctx: CanvasRenderingContext2D, v: Viewport, m: CellMeasurements): void {
+  const center = imageToScreen(v, m.center);
+  for (let k = 0; k < m.num_rays; k++) {
+    const angle = (2 * Math.PI * k) / m.num_rays;
+    const at = (r: number) => imageToScreen(v, [m.center[0] + r * Math.cos(angle), m.center[1] + r * Math.sin(angle)]);
+    const ri = m.inner_hits[k];
+    const ro = m.outer_hits[k];
+    if (ri !== null) {
+      const p = at(ri);
+      ctx.beginPath();
+      ctx.moveTo(center[0], center[1]);
+      ctx.lineTo(p[0], p[1]);
+      strokeWith(ctx, 'rgba(255, 255, 255, 0.35)', 1);
+    }
+    if (m.ray_status[k] === 'invalid' || ri === null || ro === null) continue;
+    const a = at(ri);
+    const b = at(ro);
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+    if (m.ray_status[k] === 'rejected') ctx.setLineDash([4, 3]);
+    strokeOutlined(ctx, m.ray_status[k] === 'kept' ? RAY_KEPT_COLOR : RAY_REJECTED_COLOR, 1.5);
+    ctx.setLineDash([]);
+  }
+  // Center marker
+  ctx.beginPath();
+  ctx.moveTo(center[0] - 6, center[1]);
+  ctx.lineTo(center[0] + 6, center[1]);
+  ctx.moveTo(center[0], center[1] - 6);
+  ctx.lineTo(center[0], center[1] + 6);
+  strokeOutlined(ctx, '#ffffff', 1.5);
 }
 
 function drawDraft(ctx: CanvasRenderingContext2D, state: AppState): void {

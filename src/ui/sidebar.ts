@@ -1,7 +1,9 @@
 // Sidebar sections for the annotation screen.
 
 import { DEFAULT_DISPLAY, type Channel, type DisplaySettings } from '../canvas/filters';
-import { INNER_COLOR, OUTER_COLOR } from '../canvas/render';
+import { INNER_COLOR, OUTER_COLOR, RAY_KEPT_COLOR, RAY_REJECTED_COLOR } from '../canvas/render';
+import type { Cell } from '../io/schema';
+import type { CellMeasurements, MeasurementSettings } from '../measure/measure';
 import type { AppState } from '../state';
 
 const CHANNEL_LABELS: Record<Channel, string> = {
@@ -153,12 +155,15 @@ export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): 
         const selected = c.id === state.selectedId;
         return /* html */ `
         <li data-id="${c.id}" class="${selected ? 'selected' : ''}">
-          <button class="cell-row" data-act="select" title="Select this cell">
+          <button class="cell-row" data-act="select" title="Select this cell to see all its measurements">
             <span class="name">Cell ${c.id}</span>
+            ${c.measurements.inner_inside_outer ? '' : '<span class="warn-badge" title="The dark center goes outside the outer ring">check</span>'}
+            <span class="main" title="Median distance from the dark center edge to the outer ring">${fmt(c.measurements.gap_median)} px</span>
           </button>
           ${
             selected
               ? /* html */ `<div class="cell-detail">
+                  ${cellDetail(c)}
                   <div class="cell-actions">
                     <button class="danger" data-act="delete" title="Remove this cell">Delete cell</button>
                   </div>
@@ -171,4 +176,118 @@ export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): 
   }
 
   return { update };
+}
+
+function fmt(x: number | null, digits = 1): string {
+  return x === null || !Number.isFinite(x) ? '—' : x.toFixed(digits);
+}
+
+function pct(x: number | null): string {
+  return x === null ? '—' : `${(x * 100).toFixed(1)}%`;
+}
+
+function row(label: string, value: string, tip: string): string {
+  return `<tr title="${tip}"><th>${label}</th><td>${value}</td></tr>`;
+}
+
+function group(label: string): string {
+  return `<tr class="group"><th colspan="2">${label}</th></tr>`;
+}
+
+function cellDetail(c: Cell): string {
+  const m: CellMeasurements = c.measurements;
+  const used = m.n_rays_valid - m.n_rays_rejected;
+  const warnings: string[] = [];
+  if (!m.inner_inside_outer) {
+    warnings.push('The dark center goes outside the outer ring. Please check both outlines.');
+  }
+  if (m.gap_median === null) {
+    warnings.push('No distance could be measured. The dark center may not be inside the outer ring.');
+  }
+  const leftOut = m.n_rays_rejected
+    ? ` (${m.n_rays_rejected} unusual line${m.n_rays_rejected === 1 ? '' : 's'} left out)`
+    : '';
+  return /* html */ `
+    ${warnings.map((w) => `<div class="warn">${w}</div>`).join('')}
+    <table class="stats">
+      ${group('Distance: dark center edge to outer ring')}
+      ${row('Median', `${fmt(m.gap_median)} px`, 'The middle value of all measured distances. This is the main number.')}
+      ${row('Average', `${fmt(m.gap_mean)} px`, 'Mean of the measured distances')}
+      ${row('Shortest', `${fmt(m.gap_min)} px`, 'Smallest measured distance')}
+      ${row('Longest', `${fmt(m.gap_max)} px`, 'Largest measured distance')}
+      ${row('Typical range', `${fmt(m.gap_p10)} – ${fmt(m.gap_p90)} px`, '10th to 90th percentile of the distances')}
+      ${row('Variation', `${fmt(m.gap_std)} px`, 'Standard deviation: how much the distance changes around the cell')}
+      ${row('Lines used', `${used} of ${m.num_rays}${leftOut}`, 'Measurement lines from the center that hit both outlines')}
+      ${group('Size')}
+      ${row('Outer ring width', `${fmt(m.outer.equiv_diameter)} px`, 'Diameter of a circle with the same area as the outer ring')}
+      ${row('Dark center width', `${fmt(m.inner.equiv_diameter)} px`, 'Diameter of a circle with the same area as the dark center')}
+      ${row('Outer ring longest', `${fmt(m.outer.max_feret)} px`, 'Longest straight line across the outer ring')}
+      ${row('Dark center longest', `${fmt(m.inner.max_feret)} px`, 'Longest straight line across the dark center')}
+      ${row('Outer ring roundness', fmt(m.outer.circularity, 2), '1.00 is a perfect circle; lower is more stretched or irregular')}
+      ${row('Dark center roundness', fmt(m.inner.circularity, 2), '1.00 is a perfect circle; lower is more stretched or irregular')}
+      ${group('Ratios (comparable between photos)')}
+      ${row('Distance ÷ outer radius', fmt(m.gap_over_outer_radius, 3), 'Median distance divided by half the outer ring width')}
+      ${row('Center ÷ outer width', fmt(m.inner_over_outer_diameter, 3), 'Dark center width divided by outer ring width')}
+      ${row('Band share of area', pct(m.ring_area_fraction), 'Part of the outer ring area that is outside the dark center')}
+      ${row('Center off-middle', fmt(m.center_offset, 3), 'How far the dark center sits from the middle of the outer ring, relative to the outer radius')}
+    </table>
+    <p class="note">Pixel (px) values depend on the zoom of each photo, so only compare them within the same photo. The ratios can be compared across photos.</p>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+
+export interface MeasurementControls {
+  sync(): void;
+}
+
+export function mountMeasurementControls(
+  container: HTMLElement,
+  state: AppState,
+  onChange: (settingsChanged: boolean) => void,
+): MeasurementControls {
+  container.innerHTML = /* html */ `
+    <h2>Measurement</h2>
+    <label class="check" title="Show the lines used to measure the selected cell. Shortcut: R">
+      <input type="checkbox" data-act="rays" /> Show measurement lines
+    </label>
+    <div class="legend" style="margin: 0 0 10px">
+      <span style="--c: ${RAY_KEPT_COLOR}">Used</span>
+      <span style="--c: ${RAY_REJECTED_COLOR}">Left out (unusual)</span>
+    </div>
+    <div class="field" title="How many evenly spaced lines are drawn from the center of each cell. The analysis program uses 32.">
+      <label for="meas-rays">Lines per cell</label>
+      <input type="number" id="meas-rays" min="4" max="360" step="1" />
+      <span></span>
+    </div>
+    <label class="check" title="Ignore lines whose distance is very different from the rest (same rule as the analysis program)">
+      <input type="checkbox" data-act="mad" /> Leave out unusual lines
+    </label>
+  `;
+  const rays = container.querySelector<HTMLInputElement>('[data-act="rays"]')!;
+  const num = container.querySelector<HTMLInputElement>('#meas-rays')!;
+  const mad = container.querySelector<HTMLInputElement>('[data-act="mad"]')!;
+  const s: MeasurementSettings = state.measurement;
+
+  function sync(): void {
+    rays.checked = state.showRays;
+    num.value = String(s.num_rays);
+    mad.checked = s.mad_reject;
+  }
+  rays.addEventListener('change', () => {
+    state.showRays = rays.checked;
+    onChange(false);
+  });
+  num.addEventListener('change', () => {
+    const n = Math.round(Number(num.value));
+    if (Number.isFinite(n) && n >= 4 && n <= 360) s.num_rays = n;
+    sync();
+    onChange(true);
+  });
+  mad.addEventListener('change', () => {
+    s.mad_reject = mad.checked;
+    onChange(true);
+  });
+  sync();
+  return { sync };
 }

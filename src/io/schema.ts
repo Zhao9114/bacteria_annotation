@@ -1,6 +1,8 @@
 // Types shared by the app and the JSON formats.
 // All coordinates are in original image pixel space, never screen space.
 
+import type { CellMeasurements } from '../measure/measure';
+
 export type Point = [number, number];
 export type Polygon = Point[];
 
@@ -16,4 +18,6 @@ export interface Cell {
   inner: Polygon;
   flags: Flag[];
   note: string;
+  /** Derived from the polygons; recomputed whenever they or the settings change. */
+  measurements: CellMeasurements;
 }

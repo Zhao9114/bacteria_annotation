@@ -13,7 +13,9 @@ import {
   removeLastPoint,
   startDraft,
 } from '../tools/draw';
-import { mountCellPanel, mountDisplayControls } from '../ui/sidebar';
+import { pointInPolygon } from '../measure/geometry';
+import { measureCell } from '../measure/measure';
+import { mountCellPanel, mountDisplayControls, mountMeasurementControls } from '../ui/sidebar';
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'];
 /** A left-button press that moves less than this (screen px) is a click, not a pan. */
@@ -48,6 +50,7 @@ const TEMPLATE = /* html */ `
     </div>
     <aside class="sidebar">
       <section data-ref="cellsSection"></section>
+      <section data-ref="measureSection"></section>
       <section data-ref="displaySection"></section>
     </aside>
   </main>
@@ -296,7 +299,20 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       if (isNearFirstPoint(d, p, CLOSE_RADIUS_PX / state.viewport.scale)) finishShape();
       else if (!tooClose) state.draft = addPoint(d, p);
       notify();
+      return;
     }
+    selectCell(cellAt(screenToImage(state.viewport, screen)));
+  }
+
+  /** The cell whose outer ring contains `p`; the smallest one if they overlap. */
+  function cellAt(p: Point): number | null {
+    let best: { id: number; area: number } | null = null;
+    for (const c of state.cells) {
+      if (!pointInPolygon(p, c.outer)) continue;
+      const area = c.measurements.outer.area;
+      if (!best || area < best.area) best = { id: c.id, area };
+    }
+    return best?.id ?? null;
   }
 
   // ---------- add-cell tool ----------
@@ -320,7 +336,14 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       state.draft = result.draft;
     } else {
       const id = state.nextCellId++;
-      state.cells.push({ id, outer: result.outer, inner: result.inner, flags: [], note: '' });
+      state.cells.push({
+        id,
+        outer: result.outer,
+        inner: result.inner,
+        flags: [],
+        note: '',
+        measurements: measureCell(result.outer, result.inner, state.measurement),
+      });
       state.revision++;
       state.draft = null;
       state.selectedId = id;
@@ -369,6 +392,16 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     },
   });
 
+  const measurementControls = mountMeasurementControls(ref('measureSection'), state, (settingsChanged) => {
+    if (settingsChanged) remeasureAll();
+    notify();
+  });
+
+  function remeasureAll(): void {
+    for (const c of state.cells) c.measurements = measureCell(c.outer, c.inner, state.measurement);
+    state.revision++;
+  }
+
   ref('bannerUndo').addEventListener('click', undoPoint);
   ref('bannerFinish').addEventListener('click', finishShape);
   ref('bannerCancel').addEventListener('click', cancelDraft);
@@ -399,7 +432,11 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       e.preventDefault();
       undoPoint();
     } else if (key === 'n') startAddCell();
-    else if (key === 'f') fit();
+    else if (key === 'r') {
+      state.showRays = !state.showRays;
+      measurementControls.sync();
+      notify();
+    } else if (key === 'f') fit();
     else if (key === 'g') {
       state.display.channel = CHANNELS[(CHANNELS.indexOf(state.display.channel) + 1) % CHANNELS.length];
       displayControls.sync();
