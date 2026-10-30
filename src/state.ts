@@ -3,7 +3,7 @@
 
 import { DEFAULT_DISPLAY, type DisplaySettings } from './canvas/filters';
 import type { Viewport } from './canvas/viewport';
-import type { Cell, DrawMode } from './io/schema';
+import type { Cell, DrawMode, ImageStatus } from './io/schema';
 import { DEFAULT_MEASUREMENT_SETTINGS, type MeasurementSettings } from './measure/measure';
 import type { Draft } from './tools/draw';
 import type { EdgeHit, VertexRef } from './tools/edit';
@@ -26,6 +26,8 @@ export interface AppState {
   cursor: [number, number] | null;
   cells: Cell[];
   nextCellId: number;
+  /** This user's progress on the image; saved with the annotation. */
+  status: ImageStatus;
   /** Bumped on every change to `cells`, so views can skip work when nothing changed. */
   revision: number;
   /** Cell being added, or null when not drawing. */
@@ -52,6 +54,7 @@ export function createState(): AppState {
     cursor: null,
     cells: [],
     nextCellId: 1,
+    status: 'not_started',
     revision: 0,
     draft: null,
     drawMode: localStorage.getItem('drawMode') === 'freehand' ? 'freehand' : 'points',

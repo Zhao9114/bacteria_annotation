@@ -4,10 +4,12 @@ import { applyDisplayFilters, CHANNELS } from '../canvas/filters';
 import { CLOSE_RADIUS_PX, INNER_COLOR, OUTER_COLOR, render } from '../canvas/render';
 import { fitToWindow, pan, screenToImage, zoomAt, type Point } from '../canvas/viewport';
 import { History, type Snapshot } from '../history';
+import { fromDoc, toDoc } from '../io/annotation';
 import type { Cell, DrawMode } from '../io/schema';
 import { pointInPolygon } from '../measure/geometry';
 import { measureCell } from '../measure/measure';
 import { createState, notify, subscribe, type AppState, type LoadedImage } from '../state';
+import { compareImages, type ImageRecord, type ImageSummary, type Store } from '../storage/store';
 import {
   addPoint,
   canClose,
@@ -22,8 +24,8 @@ import { deleteVertex, hitEdge, hitVertex, insertVertex, moveVertex, type Ring }
 import { icon } from '../ui/icons';
 import { mountCellPanel, mountDisplayControls, mountMeasurementControls } from '../ui/sidebar';
 import { toast } from '../ui/toast';
+import { annotatorName, mountUserMenu } from '../ui/user';
 
-const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'];
 /** A left-button press that moves less than this (screen px) is a click, not a pan. */
 const CLICK_SLOP = 4;
 /** A click this close (screen px) to the previous point is ignored rather than added twice. */
@@ -31,6 +33,12 @@ const DUPLICATE_PX = 3;
 /** Grab radius (screen px) for points and edges of the selected cell. */
 const HANDLE_PX = 8;
 const ZOOM_STEP = 1.25;
+/** Height (screen px) kept free above the image when fitting, for the floating toolbar. */
+const TOOLBAR_SPACE = 48;
+/** Autosave this long after the last change. */
+const SAVE_DELAY_MS = 800;
+const SAVE_RETRY_MS = 5000;
+const DISPLAY_KEY = 'display';
 /** Freehand: spacing of stroke samples and simplification tolerance, in screen px. */
 const STROKE_SAMPLE_PX = 1.5;
 const STROKE_SIMPLIFY_PX = 2;
@@ -39,10 +47,18 @@ const TEMPLATE = /* html */ `
 <div class="app">
   <header class="topbar">
     <a class="brand" href="#/library"><span class="logo">${icon('logo')}</span>Cell Annotator</a>
-    <nav class="crumbs"><span>/</span><span class="current" data-ref="crumbFile">No image</span></nav>
+    <nav class="crumbs">
+      <span>/</span><a href="#/library">Library</a><span>/</span><span class="current" data-ref="crumbFile">Loading…</span>
+    </nav>
     <span class="spacer"></span>
-    <button class="primary" data-ref="open" title="Open an image from your computer">${icon('upload')} Open image</button>
-    <input type="file" accept="image/*" data-ref="fileInput" hidden />
+    <span class="pill" data-ref="savePill"></span>
+    <div class="group">
+      <button class="ghost icon-btn" data-ref="prev" title="Previous image (←)">${icon('chevronLeft')}</button>
+      <span class="muted num" data-ref="position"></span>
+      <button class="ghost icon-btn" data-ref="next" title="Next image (→)">${icon('chevronRight')}</button>
+    </div>
+    <button data-ref="done" title="Mark this image as finished. You can still change it later.">${icon('check')} Mark as done</button>
+    <div class="group" data-ref="user"></div>
   </header>
   <main class="workspace">
     <div class="stage" data-ref="wrap">
@@ -50,9 +66,9 @@ const TEMPLATE = /* html */ `
       <div class="empty-state" data-ref="emptyHint">
         <div class="card glass">
           <div class="big-icon">${icon('image')}</div>
-          <h2>Open a microscope image</h2>
-          <div>Drag a photo here, or</div>
-          <button class="primary" data-ref="openEmpty">${icon('upload')} Choose image</button>
+          <h2 data-ref="loadTitle">Loading image…</h2>
+          <div data-ref="loadMsg"></div>
+          <a href="#/library" class="hidden" data-ref="loadBack"><button>${icon('chevronLeft')} Back to library</button></a>
         </div>
       </div>
       <div class="toolbar glass hidden" data-ref="toolbar">
@@ -97,8 +113,11 @@ const TEMPLATE = /* html */ `
   </main>
 </div>`;
 
-export function mountAnnotateScreen(root: HTMLElement): void {
+export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: string): () => void {
   root.innerHTML = TEMPLATE;
+  // Everything registered on window is removed when the screen is left.
+  const abort = new AbortController();
+  const { signal } = abort;
   const ref = <T extends HTMLElement>(name: string): T => {
     const el = root.querySelector<T>(`[data-ref="${name}"]`);
     if (!el) throw new Error(`missing ref ${name}`);
@@ -106,13 +125,17 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   };
 
   const state: AppState = createState();
+  try {
+    Object.assign(state.display, JSON.parse(localStorage.getItem(DISPLAY_KEY) ?? '{}'));
+  } catch {
+    // Ignore unreadable saved display settings.
+  }
   // Dev-only handle for poking at state from the console and browser tests.
   if (import.meta.env.DEV) (window as unknown as { __state: AppState }).__state = state;
   const wrap = ref<HTMLDivElement>('wrap');
   const canvas = ref<HTMLCanvasElement>('canvas');
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2D canvas not supported');
-  const fileInput = ref<HTMLInputElement>('fileInput');
 
   // ---------- undo / redo ----------
   const history = new History();
@@ -160,19 +183,22 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     });
   }
 
-  new ResizeObserver(() => {
+  const resizeObserver = new ResizeObserver(() => {
     const dpr = window.devicePixelRatio || 1;
     cssW = wrap.clientWidth;
     cssH = wrap.clientHeight;
     canvas.width = Math.round(cssW * dpr);
     canvas.height = Math.round(cssH * dpr);
     requestRedraw();
-  }).observe(wrap);
+  });
+  resizeObserver.observe(wrap);
 
   function fit(): void {
     if (!state.image) return;
-    // Read the live size: the ResizeObserver may not have reported yet.
-    state.viewport = fitToWindow(state.image.width, state.image.height, wrap.clientWidth, wrap.clientHeight);
+    // Read the live size: the ResizeObserver may not have reported yet. Keep the
+    // top strip clear so the floating toolbar doesn't cover the image.
+    const v = fitToWindow(state.image.width, state.image.height, wrap.clientWidth, wrap.clientHeight - TOOLBAR_SPACE);
+    state.viewport = { ...v, ty: v.ty + TOOLBAR_SPACE };
     notify();
   }
 
@@ -183,43 +209,141 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   }
 
   // ---------- image loading ----------
-  async function loadFile(file: File): Promise<void> {
-    if (!ACCEPTED_TYPES.includes(file.type)) {
-      toast(`"${file.name}" is not a supported image. Please use PNG, JPEG, WebP, BMP or GIF.`, 'error');
-      return;
-    }
-    if (
-      (state.cells.length > 0 || state.draft) &&
-      !confirm('Opening another image will discard the cells marked on this one. Continue?')
-    ) {
-      return;
-    }
-    let bitmap: ImageBitmap;
+  let record: ImageRecord | null = null;
+  /** Creation time of this user's annotation, kept across saves. */
+  let annotationCreated: string | null = null;
+
+  async function loadImage(): Promise<void> {
     try {
-      bitmap = await createImageBitmap(file);
-    } catch {
-      toast(`Could not open "${file.name}". The file may be damaged.`, 'error');
+      const [{ record: rec, blob }, doc] = await Promise.all([store.getImage(imageId), store.getAnnotation(imageId)]);
+      const bitmap = await createImageBitmap(blob);
+      if (signal.aborted) return bitmap.close();
+      const { width, height } = bitmap;
+      const display = document.createElement('canvas');
+      display.width = width;
+      display.height = height;
+      const dctx = display.getContext('2d', { willReadFrequently: true })!;
+      dctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      const pixels = dctx.getImageData(0, 0, width, height);
+
+      record = rec;
+      state.image = { filename: rec.filename, width, height, pixels, display };
+      if (doc) {
+        const content = fromDoc(doc);
+        // Keep the same settings object: the measurement panel holds a reference to it.
+        Object.assign(state.measurement, content.measurement);
+        state.cells = content.cells;
+        state.nextCellId = content.nextCellId;
+        state.status = content.status;
+        annotationCreated = doc.created;
+      }
+      state.revision++;
+      savedRevision = state.revision;
+      measurementControls.sync();
+      refilter();
+      fit();
+      void loadNeighbours(rec);
+    } catch (e) {
+      if (signal.aborted) return;
+      ref('loadTitle').textContent = 'Could not open this image';
+      ref('loadMsg').textContent = (e as Error).message;
+      ref('loadBack').classList.remove('hidden');
+    }
+  }
+
+  // ---------- autosave ----------
+  let savedRevision = 0;
+  let saving = false;
+  let saveFailed = false;
+  let saveTimer = 0;
+
+  function scheduleSave(delay = SAVE_DELAY_MS): void {
+    clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => void saveNow(), delay);
+  }
+
+  async function saveNow(): Promise<void> {
+    clearTimeout(saveTimer);
+    if (!record || saving || state.revision === savedRevision) return;
+    const rev = state.revision;
+    const doc = toDoc(
+      { cells: state.cells, status: state.status, measurement: state.measurement },
+      { filename: record.filename, sha256: record.sha256, width: record.width, height: record.height },
+      annotatorName(store.currentUser()),
+      annotationCreated,
+    );
+    saving = true;
+    updateSavePill();
+    try {
+      await store.saveAnnotation(record.id, doc);
+      annotationCreated = doc.created;
+      savedRevision = rev;
+      saveFailed = false;
+    } catch (e) {
+      if (!saveFailed) toast(`Could not save: ${(e as Error).message}. Retrying…`, 'error');
+      saveFailed = true;
+      scheduleSave(SAVE_RETRY_MS);
+    } finally {
+      saving = false;
+      if (!saveFailed && state.revision !== savedRevision) scheduleSave();
+      updateSavePill();
+    }
+  }
+
+  const savePill = ref('savePill');
+  function updateSavePill(): void {
+    if (!record) {
+      savePill.className = 'hidden';
       return;
     }
-    const { width, height } = bitmap;
-    const display = document.createElement('canvas');
-    display.width = width;
-    display.height = height;
-    const dctx = display.getContext('2d', { willReadFrequently: true })!;
-    dctx.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const pixels = dctx.getImageData(0, 0, width, height);
-    state.image = { filename: file.name, width, height, pixels, display };
-    state.cells = [];
-    state.nextCellId = 1;
-    state.draft = null;
-    state.selectedId = null;
-    state.selectedVertex = null;
-    state.revision++;
-    history.clear();
-    refilter();
-    fit();
+    const pending = saving || state.revision !== savedRevision;
+    const [cls, text] = saveFailed
+      ? ['bad', "Couldn't save · retrying"]
+      : pending
+        ? ['info', 'Saving…']
+        : ['ok', store.kind === 'local' ? 'Saved in this browser' : 'Saved'];
+    savePill.className = `pill ${cls}`;
+    savePill.textContent = text;
   }
+
+  // ---------- status + previous / next ----------
+  const doneBtn = ref<HTMLButtonElement>('done');
+  doneBtn.addEventListener('click', () => {
+    state.status = state.status === 'done' ? 'in_progress' : 'done';
+    state.revision++;
+    notify();
+    if (state.status === 'done') toast('Marked as done.');
+  });
+
+  let neighbours: ImageSummary[] = [];
+  async function loadNeighbours(rec: ImageRecord): Promise<void> {
+    const scope = rec.owner_id === store.currentUser()?.id ? 'mine' : 'shared';
+    try {
+      neighbours = (await store.listImages(scope)).sort(compareImages);
+    } catch {
+      neighbours = [];
+    }
+    updateNav();
+  }
+  function neighbourIndex(): number {
+    return neighbours.findIndex((n) => n.id === imageId);
+  }
+  function updateNav(): void {
+    const i = neighbourIndex();
+    ref<HTMLButtonElement>('prev').disabled = i <= 0;
+    ref<HTMLButtonElement>('next').disabled = i < 0 || i >= neighbours.length - 1;
+    ref('position').textContent = i >= 0 ? `${i + 1} / ${neighbours.length}` : '';
+  }
+  async function go(delta: number): Promise<void> {
+    const target = neighbours[neighbourIndex() + delta];
+    if (!target || state.draft) return;
+    await saveNow();
+    location.hash = `#/image/${target.id}`;
+  }
+  ref('prev').addEventListener('click', () => void go(-1));
+  ref('next').addEventListener('click', () => void go(1));
+  mountUserMenu(ref('user'), store);
 
   // ---------- display filters ----------
   // Recomputed into the image's offscreen canvas only when settings change,
@@ -242,31 +366,15 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     applyDisplayFilters(img.pixels, state.display, out.data);
     img.display.getContext('2d')!.putImageData(out, 0, 0);
   }
-  const displayControls = mountDisplayControls(ref('displaySection'), state.display, requestRefilter);
+  function displayChanged(): void {
+    localStorage.setItem(DISPLAY_KEY, JSON.stringify(state.display));
+    requestRefilter();
+  }
+  const displayControls = mountDisplayControls(ref('displaySection'), state.display, displayChanged);
 
-  const openPicker = () => fileInput.click();
-  ref('open').addEventListener('click', openPicker);
-  ref('openEmpty').addEventListener('click', openPicker);
   ref('fit').addEventListener('click', fit);
   ref('zoomIn').addEventListener('click', () => zoomBy(ZOOM_STEP));
   ref('zoomOut').addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
-  fileInput.addEventListener('change', () => {
-    const file = fileInput.files?.[0];
-    if (file) void loadFile(file);
-    fileInput.value = '';
-  });
-
-  wrap.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    wrap.classList.add('dragover');
-  });
-  wrap.addEventListener('dragleave', () => wrap.classList.remove('dragover'));
-  wrap.addEventListener('drop', (e) => {
-    e.preventDefault();
-    wrap.classList.remove('dragover');
-    const file = e.dataTransfer?.files[0];
-    if (file) void loadFile(file);
-  });
 
   // ---------- zoom ----------
   const screenPoint = (e: { clientX: number; clientY: number }): Point => {
@@ -617,10 +725,17 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   ref('bannerFinish').addEventListener('click', finishShape);
   ref('bannerCancel').addEventListener('click', cancelDraft);
 
-  window.addEventListener('beforeunload', (e) => {
-    // Nothing is saved yet (storage arrives in milestone 6), so warn before losing work.
-    if (state.cells.length > 0 || state.draft) e.preventDefault();
-  });
+  window.addEventListener(
+    'beforeunload',
+    (e) => {
+      // Only warn while a change hasn't reached storage yet.
+      if (saving || state.revision !== savedRevision) {
+        void saveNow();
+        e.preventDefault();
+      }
+    },
+    { signal },
+  );
 
   // ---------- keyboard ----------
   window.addEventListener('keydown', (e) => {
@@ -665,15 +780,20 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     else if (key === 'g') {
       state.display.channel = CHANNELS[(CHANNELS.indexOf(state.display.channel) + 1) % CHANNELS.length];
       displayControls.sync();
-      requestRefilter();
-    }
-  });
-  window.addEventListener('keyup', (e) => {
-    if (e.code === 'Space') {
-      spaceDown = false;
-      updateCursorStyle();
-    }
-  });
+      displayChanged();
+    } else if (key === 'arrowleft' && !state.draft) void go(-1);
+    else if (key === 'arrowright' && !state.draft) void go(1);
+  }, { signal });
+  window.addEventListener(
+    'keyup',
+    (e) => {
+      if (e.code === 'Space') {
+        spaceDown = false;
+        updateCursorStyle();
+      }
+    },
+    { signal },
+  );
 
   // ---------- chrome (top bar, toolbar, prompt, HUD) ----------
   const crumbFile = ref('crumbFile');
@@ -728,7 +848,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
 
   function updateChrome(): void {
     const img = state.image;
-    crumbFile.textContent = img ? img.filename : 'No image';
+    crumbFile.textContent = img ? img.filename : 'Loading…';
     crumbFile.title = img ? `${img.filename} (${img.width} × ${img.height} px)` : '';
     emptyHint.classList.toggle('hidden', !!img);
     toolbar.classList.toggle('hidden', !img);
@@ -741,6 +861,10 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     undoBtn.disabled = !history.canUndo && !(state.draft && state.draft.points.length > 0);
     redoBtn.disabled = !history.canRedo;
     cellCount.textContent = String(state.cells.length);
+    doneBtn.classList.toggle('active', state.status === 'done');
+    doneBtn.disabled = !img;
+    doneBtn.innerHTML = `${icon('check')} ${state.status === 'done' ? 'Done' : 'Mark as done'}`;
+    updateSavePill();
     updateBanner();
     cellPanel.update(state);
 
@@ -751,11 +875,25 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       : '';
   }
 
-  subscribe(() => {
+  let lastRevision = state.revision;
+  const unsubscribe = subscribe(() => {
+    if (state.revision !== lastRevision) {
+      lastRevision = state.revision;
+      if (state.status === 'not_started' && state.cells.length > 0) state.status = 'in_progress';
+      scheduleSave();
+    }
     updateChrome();
     requestRedraw();
   });
   updateChrome();
+  void loadImage();
+
+  return () => {
+    void saveNow(); // flush anything pending; it finishes in the background
+    abort.abort();
+    resizeObserver.disconnect();
+    unsubscribe();
+  };
 }
 
 const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'file', 'color']);

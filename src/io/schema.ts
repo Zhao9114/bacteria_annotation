@@ -1,7 +1,7 @@
 // Types shared by the app and the JSON formats.
 // All coordinates are in original image pixel space, never screen space.
 
-import type { CellMeasurements } from '../measure/measure';
+import type { CellMeasurements, MeasurementSettings } from '../measure/measure';
 
 export type Point = [number, number];
 export type Polygon = Point[];
@@ -24,4 +24,21 @@ export interface Cell {
   draw_mode: DrawMode;
   /** Derived from the polygons; recomputed whenever they or the settings change. */
   measurements: CellMeasurements;
+}
+
+export type ImageStatus = 'not_started' | 'in_progress' | 'done';
+
+export const SCHEMA_VERSION = 1;
+
+/** One person's annotation of one image, as stored and exported. */
+export interface AnnotationDoc {
+  schema_version: typeof SCHEMA_VERSION;
+  image: { filename: string; sha256: string; width: number; height: number };
+  annotator: string;
+  status: ImageStatus;
+  created: string;
+  modified: string;
+  scale: { px_per_unit: number | null; unit: string | null; reference: string | null };
+  measurement_settings: MeasurementSettings;
+  cells: Cell[];
 }
