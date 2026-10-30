@@ -1,7 +1,7 @@
 // Top-bar user menu: shows who is annotating, lets them change their name,
 // and (online) sign out.
 
-import type { Store, User } from '../storage/store';
+import type { Account, Auth, User } from '../storage/store';
 import { icon } from './icons';
 import { toast } from './toast';
 
@@ -14,19 +14,19 @@ function initials(name: string): string {
   return ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
 }
 
-export function mountUserMenu(container: HTMLElement, store: Store): void {
-  const user = store.currentUser();
+export function mountUserMenu(container: HTMLElement, account: Account, auth: Auth | null): void {
+  const user = account.currentUser();
   const name = annotatorName(user);
   container.innerHTML = /* html */ `
-    <button class="ghost" data-act="menu" title="Your name on annotations${store.kind === 'supabase' ? ', and sign out' : ''}">
+    <button class="ghost" data-act="menu" title="Your name on annotations${auth ? ', and sign out' : ''}">
       <span class="avatar">${initials(name)}</span><span class="muted user-name"></span>
     </button>`;
   container.querySelector('.user-name')!.textContent = name;
-  container.querySelector('[data-act="menu"]')!.addEventListener('click', () => openUserDialog(store));
+  container.querySelector('[data-act="menu"]')!.addEventListener('click', () => openUserDialog(account, auth));
 }
 
-export function openUserDialog(store: Store, opts: { required?: boolean } = {}): Promise<void> {
-  const user = store.currentUser();
+export function openUserDialog(account: Account, auth: Auth | null, opts: { required?: boolean } = {}): Promise<void> {
+  const user = account.currentUser();
   const dialog = document.createElement('dialog');
   dialog.className = 'modal';
   dialog.innerHTML = /* html */ `
@@ -38,7 +38,7 @@ export function openUserDialog(store: Store, opts: { required?: boolean } = {}):
       </label>
       ${user?.email ? `<div class="muted">Signed in as <b></b></div>` : ''}
       <div class="actions">
-        ${store.kind === 'supabase' && !opts.required ? `<button type="button" class="danger" data-act="signout">${icon('logout')} Sign out</button><span class="spacer"></span>` : ''}
+        ${auth && !opts.required ? `<button type="button" class="danger" data-act="signout">${icon('logout')} Sign out</button><span class="spacer"></span>` : ''}
         ${opts.required ? '' : '<button type="button" data-act="cancel">Cancel</button>'}
         <button class="primary" value="save">Save</button>
       </div>
@@ -57,7 +57,7 @@ export function openUserDialog(store: Store, opts: { required?: boolean } = {}):
     };
     dialog.querySelector('[data-act="cancel"]')?.addEventListener('click', close);
     dialog.querySelector('[data-act="signout"]')?.addEventListener('click', async () => {
-      await store.signOut();
+      await auth?.signOut();
       close();
     });
     // A required name can't be dismissed with Esc.
@@ -69,10 +69,8 @@ export function openUserDialog(store: Store, opts: { required?: boolean } = {}):
       const name = input.value.trim();
       if (!name) return;
       try {
-        await store.setDisplayName(name);
+        await account.setDisplayName(name); // the account's change signal re-renders the screen
         close();
-        // Re-render the current screen so the new name shows everywhere.
-        window.dispatchEvent(new HashChangeEvent('hashchange'));
       } catch (err) {
         toast(`Could not save your name: ${(err as Error).message}`, 'error');
       }
@@ -83,7 +81,7 @@ export function openUserDialog(store: Store, opts: { required?: boolean } = {}):
 }
 
 /** Shown after following a password-reset link: choose a new password. */
-export function openNewPasswordDialog(store: Store): Promise<void> {
+export function openNewPasswordDialog(auth: Auth): Promise<void> {
   const dialog = document.createElement('dialog');
   dialog.className = 'modal';
   dialog.innerHTML = /* html */ `
@@ -117,7 +115,7 @@ export function openNewPasswordDialog(store: Store): Promise<void> {
       if (pw.value.length < 6) return toast('Please choose a password with at least 6 characters.', 'error');
       if (pw.value !== repeat.value) return toast('The two passwords are different.', 'error');
       try {
-        await store.setPassword(pw.value);
+        await auth.setPassword(pw.value);
         toast('Password changed.');
         close();
       } catch (err) {

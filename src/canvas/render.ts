@@ -1,10 +1,26 @@
-// Draws one frame: the image under the viewport transform, then overlays in
-// screen space so line widths and labels keep a constant on-screen size.
+// Draws one frame of a Scene: the image under the viewport transform, then
+// overlays in screen space so line widths and labels keep a constant size.
 
+import type { HoverTarget } from '../annotation/session';
 import type { Cell, Point } from '../io/schema';
 import type { CellMeasurements } from '../measure/measure';
-import type { AppState } from '../state';
+import type { Draft } from '../tools/draw';
+import type { VertexRef } from '../tools/edit';
 import { imageToScreen, type Viewport } from './viewport';
+
+/** Everything one frame shows, and nothing else. */
+export interface Scene {
+  /** The (display-filtered) image, or null while it loads. */
+  image: CanvasImageSource | null;
+  viewport: Viewport;
+  cells: readonly Cell[];
+  /** Shade the band between each cell's outer ring and dark center. */
+  showBand: boolean;
+  /** The selected cell and its editing feedback. */
+  selection: { cell: Cell; vertex: VertexRef | null; hover: HoverTarget | null; rays: boolean } | null;
+  /** The cell being drawn, with the cursor for the rubber band (null for touch, which doesn't hover). */
+  drawing: { draft: Readonly<Draft>; cursor: Point | null; closeRadiusPx: number } | null;
+}
 
 /** Colourblind-safe pair that reads on green and grey backgrounds. */
 export const OUTER_COLOR = '#ff3fd0';
@@ -20,30 +36,26 @@ export function closeRadiusPx(pointerType: string): number {
   return pointerType === 'touch' ? 22 : 10;
 }
 
-export function render(ctx: CanvasRenderingContext2D, state: AppState, cssW: number, cssH: number): void {
+export function render(ctx: CanvasRenderingContext2D, scene: Scene, cssW: number, cssH: number): void {
   ctx.clearRect(0, 0, cssW, cssH); // the stage's CSS background shows through
+  if (!scene.image) return;
 
-  const img = state.image;
-  if (!img) return;
-
-  const v = state.viewport;
+  const v = scene.viewport;
   ctx.save();
   ctx.translate(v.tx, v.ty);
   ctx.scale(v.scale, v.scale);
   // Show crisp pixels when zoomed in far enough to see them.
   ctx.imageSmoothingEnabled = v.scale < 2;
-  ctx.drawImage(img.display, 0, 0);
+  ctx.drawImage(scene.image, 0, 0);
   ctx.restore();
 
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  for (const cell of state.cells) {
-    drawCell(ctx, v, cell, cell.id === state.selectedId, state.showBand);
-  }
-  const selected = state.cells.find((c) => c.id === state.selectedId);
-  if (selected && state.showRays) drawRays(ctx, v, selected.measurements);
-  if (selected) drawHandles(ctx, v, selected, state);
-  drawDraft(ctx, state);
+  const sel = scene.selection;
+  for (const cell of scene.cells) drawCell(ctx, v, cell, cell.id === sel?.cell.id, scene.showBand);
+  if (sel?.rays) drawRays(ctx, v, sel.cell.measurements);
+  if (sel) drawHandles(ctx, v, sel.cell, sel.vertex, sel.hover);
+  if (scene.drawing) drawDraft(ctx, v, scene.drawing);
 }
 
 function drawCell(ctx: CanvasRenderingContext2D, v: Viewport, cell: Cell, selected: boolean, showBand: boolean): void {
@@ -109,9 +121,14 @@ function drawRays(ctx: CanvasRenderingContext2D, v: Viewport, m: CellMeasurement
 }
 
 /** Editable points of the selected cell, plus hover and selection feedback. */
-function drawHandles(ctx: CanvasRenderingContext2D, v: Viewport, cell: Cell, state: AppState): void {
-  const hv = state.hover?.vertex;
-  const sv = state.selectedVertex;
+function drawHandles(
+  ctx: CanvasRenderingContext2D,
+  v: Viewport,
+  cell: Cell,
+  sv: VertexRef | null,
+  hover: HoverTarget | null,
+): void {
+  const hv = hover?.vertex;
   for (const ring of ['outer', 'inner'] as const) {
     const color = ring === 'outer' ? OUTER_COLOR : INNER_COLOR;
     cell[ring].forEach((p, i) => {
@@ -126,7 +143,7 @@ function drawHandles(ctx: CanvasRenderingContext2D, v: Viewport, cell: Cell, sta
       }
     });
   }
-  const edge = state.hover?.edge;
+  const edge = hover?.edge;
   if (edge && !hv) {
     // Ghost point where a click would insert a new one.
     const s = imageToScreen(v, edge.point);
@@ -140,10 +157,9 @@ function drawHandles(ctx: CanvasRenderingContext2D, v: Viewport, cell: Cell, sta
   }
 }
 
-function drawDraft(ctx: CanvasRenderingContext2D, state: AppState): void {
-  const d = state.draft;
-  if (!d) return;
-  const v = state.viewport;
+function drawDraft(ctx: CanvasRenderingContext2D, v: Viewport, drawing: NonNullable<Scene['drawing']>): void {
+  const d = drawing.draft;
+  const closeRadius = drawing.closeRadiusPx;
 
   if (d.outer) {
     tracePathNew(ctx, d.outer.map((p) => imageToScreen(v, p)), true);
@@ -163,13 +179,13 @@ function drawDraft(ctx: CanvasRenderingContext2D, state: AppState): void {
     strokeOutlined(ctx, color, 2);
   }
 
-  const cursor = state.cursor ? imageToScreen(v, state.cursor) : null;
+  const cursor = drawing.cursor ? imageToScreen(v, drawing.cursor) : null;
   const first = pts[0];
   const nearFirst =
     !!cursor &&
     !!first &&
     pts.length >= 3 &&
-    Math.hypot(cursor[0] - first[0], cursor[1] - first[1]) <= closeRadiusPx(state.pointerType);
+    Math.hypot(cursor[0] - first[0], cursor[1] - first[1]) <= closeRadius;
 
   // Rubber band from the last point to the cursor (or to the first point when about to close).
   if (cursor && pts.length > 0) {
@@ -186,7 +202,7 @@ function drawDraft(ctx: CanvasRenderingContext2D, state: AppState): void {
   pts.forEach((p, i) => drawVertex(ctx, p, color, i === 0 ? 6 : 3.5));
   if (nearFirst) {
     ctx.beginPath();
-    ctx.arc(first[0], first[1], closeRadiusPx(state.pointerType) + 2, 0, Math.PI * 2);
+    ctx.arc(first[0], first[1], closeRadius + 2, 0, Math.PI * 2);
     strokeOutlined(ctx, '#ffffff', 2);
   }
 }

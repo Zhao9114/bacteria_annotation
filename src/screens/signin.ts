@@ -1,7 +1,7 @@
 // Sign-in screen (online version only): email + password, with sign-up and
 // password reset, plus "Continue with Google" when Google is enabled in Supabase.
 
-import type { Store } from '../storage/store';
+import type { Auth } from '../storage/store';
 import { icon } from '../ui/icons';
 import { toast } from '../ui/toast';
 
@@ -14,7 +14,7 @@ const GOOGLE_LOGO = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" st
 
 type Mode = 'signin' | 'signup';
 
-export function mountSignInScreen(root: HTMLElement, store: Store): () => void {
+export function mountSignInScreen(root: HTMLElement, auth: Auth): () => void {
   root.innerHTML = /* html */ `
     <div class="signin">
       <form class="card-form glass" data-ref="form" novalidate>
@@ -95,8 +95,8 @@ export function mountSignInScreen(root: HTMLElement, store: Store): () => void {
     if (password.length < 6) return toast('Please choose a password with at least 6 characters.', 'error');
     void busy(submit, async () => {
       if (mode === 'signin') {
-        await store.signInWithPassword(email, password); // the router takes over once signed in
-      } else if ((await store.signUp(name, email, password)) === 'confirm_email') {
+        await auth.signInWithPassword(email, password); // the router takes over once signed in
+      } else if ((await auth.signUp(name, email, password)) === 'confirm_email') {
         showNotice('Confirm your email', `We sent a confirmation link to ${email}. Click it, then sign in here.`);
       }
     });
@@ -110,7 +110,7 @@ export function mountSignInScreen(root: HTMLElement, store: Store): () => void {
       return;
     }
     void busy(q('forgot'), async () => {
-      await store.sendPasswordReset(email);
+      await auth.sendPasswordReset(email);
       showNotice('Check your email', `If ${email} has an account, we sent it a link to choose a new password.`);
     });
   });
@@ -121,9 +121,9 @@ export function mountSignInScreen(root: HTMLElement, store: Store): () => void {
     setMode('signin');
   });
 
-  q('google').addEventListener('click', () => void busy(q('google'), () => store.signInWithGoogle()));
+  q('google').addEventListener('click', () => void busy(q('google'), () => auth.signInWithGoogle()));
   // Only offer Google once it is switched on in Supabase; otherwise it leads to an error page.
-  void store.authProviders().then(({ google }) => {
+  void auth.providers().then(({ google }) => {
     q('googleBox').classList.toggle('hidden', !google);
     q('google').classList.toggle('hidden', !google);
   });

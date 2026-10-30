@@ -2,7 +2,7 @@
 // open one to annotate, share or delete your own.
 
 import type { ImageStatus } from '../io/schema';
-import { compareImages, type ImageSummary, type LibraryScope, type Store } from '../storage/store';
+import { compareImages, type Backend, type ImageSummary, type LibraryScope } from '../storage/store';
 import { prepareImage } from '../storage/upload';
 import { icon } from '../ui/icons';
 import { toast } from '../ui/toast';
@@ -53,14 +53,14 @@ const TEMPLATE = /* html */ `
   </main>
 </div>`;
 
-export function mountLibraryScreen(root: HTMLElement, store: Store): () => void {
+export function mountLibraryScreen(root: HTMLElement, { library, account, auth }: Backend): () => void {
   root.innerHTML = TEMPLATE;
   const ref = <T extends HTMLElement>(name: string) => root.querySelector<T>(`[data-ref="${name}"]`)!;
   const abort = new AbortController();
   const { signal } = abort;
 
   let scope: LibraryScope = (sessionStorage.getItem('libraryScope') as LibraryScope) || 'mine';
-  if (store.kind === 'local') scope = 'mine';
+  if (!library.canShare) scope = 'mine';
   let images: ImageSummary[] = [];
   let loading = true;
 
@@ -72,21 +72,21 @@ export function mountLibraryScreen(root: HTMLElement, store: Store): () => void 
   const scopeSwitch = ref('scope');
 
   ref('where').innerHTML =
-    store.kind === 'local'
+    library.location === 'browser'
       ? `${icon('hardDrive')} <span class="label">Saved in this browser only</span>`
       : `${icon('cloud')} <span class="label">Saved online</span>`;
   ref('where').title =
-    store.kind === 'local'
+    library.location === 'browser'
       ? 'Images and annotations are stored in this browser on this computer. Clearing browser data deletes them.'
       : 'Images and annotations are stored in the online database.';
-  mountUserMenu(ref('user'), store);
-  scopeSwitch.classList.toggle('hidden', store.kind === 'local');
+  mountUserMenu(ref('user'), account, auth);
+  scopeSwitch.classList.toggle('hidden', !library.canShare);
 
   async function load(): Promise<void> {
     loading = true;
     draw();
     try {
-      images = await store.listImages(scope);
+      images = await library.listImages(scope);
     } catch (e) {
       toast(`Could not load the library: ${(e as Error).message}`, 'error');
       images = [];
@@ -139,9 +139,9 @@ export function mountLibraryScreen(root: HTMLElement, store: Store): () => void 
   }
 
   function card(i: ImageSummary): string {
-    const mine = i.owner_id === store.currentUser()?.id;
+    const mine = i.owner_id === account.currentUser()?.id;
     const shareBtn =
-      mine && store.kind === 'supabase'
+      mine && library.canShare
         ? `<button class="${i.shared ? 'on' : ''}" data-act="share" title="${
             i.shared ? 'Shared with everyone signed in. Click to make private.' : 'Private. Click to share with everyone signed in.'
           }">${icon('share')}</button>`
@@ -177,7 +177,7 @@ export function mountLibraryScreen(root: HTMLElement, store: Store): () => void 
     for (let k = 0; k < images.length; k++) {
       progress.textContent = `Adding ${k + 1} of ${images.length}…`;
       try {
-        const res = await store.addImage(await prepareImage(images[k]));
+        const res = await library.addImage(await prepareImage(images[k]));
         if (res === 'duplicate') dupes++;
         else added++;
       } catch (e) {
@@ -219,7 +219,7 @@ export function mountLibraryScreen(root: HTMLElement, store: Store): () => void 
     if (target.closest('[data-act="delete"]')) {
       if (!confirm(`Delete "${img.filename}" and all its annotations? This cannot be undone.`)) return;
       try {
-        await store.deleteImage(img.id);
+        await library.deleteImage(img.id);
         toast(`Deleted ${img.filename}.`);
       } catch (err) {
         toast(`Could not delete: ${(err as Error).message}`, 'error');
@@ -227,7 +227,7 @@ export function mountLibraryScreen(root: HTMLElement, store: Store): () => void 
       await load();
     } else if (target.closest('[data-act="share"]')) {
       try {
-        await store.setShared(img.id, !img.shared);
+        await library.setShared(img.id, !img.shared);
         img.shared = !img.shared;
         toast(img.shared ? `${img.filename} is now shared with everyone signed in.` : `${img.filename} is now private.`);
         draw();

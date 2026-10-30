@@ -4,7 +4,7 @@
 
 import { createClient, type SupabaseClient, type User as AuthUser } from '@supabase/supabase-js';
 import type { AnnotationDoc, ImageStatus } from '../io/schema';
-import type { ImageRecord, ImageSummary, LibraryScope, PreparedImage, Store, User } from './store';
+import type { Account, Auth, ImageRecord, ImageSummary, LibraryScope, LibraryStore, PreparedImage, User } from './store';
 import { compareImages } from './store';
 
 const BUCKET = 'images';
@@ -81,9 +81,12 @@ function check<T>(res: { data?: T | null; error: { message: string } | null }): 
   return res.data as T;
 }
 
-export class SupabaseStore implements Store {
-  readonly kind = 'supabase';
+/** One Supabase client plays all three roles: library, account and auth. */
+export class SupabaseStore implements LibraryStore, Account, Auth {
+  readonly location = 'online';
+  readonly canShare = true;
   private user: User | null = null;
+  private readonly listeners = new Set<() => void>();
   passwordRecovery = false;
 
   private constructor(
@@ -103,6 +106,12 @@ export class SupabaseStore implements Store {
     // Resolves after a Google or email-link return has been exchanged for a session.
     const { data } = await sb.auth.getSession();
     store.user = toUser(data.session?.user);
+    sb.auth.onAuthStateChange((_event, session) => {
+      const before = store.user?.id ?? null;
+      store.user = toUser(session?.user);
+      // Only when the person changes (sign in / out), not on token refreshes.
+      if (before !== (store.user?.id ?? null)) store.emit();
+    });
     store.passwordRecovery = recovery && !!store.user;
     if (recovery) {
       params.delete(RESET_PARAM);
@@ -160,7 +169,7 @@ export class SupabaseStore implements Store {
     this.passwordRecovery = false;
   }
 
-  async authProviders(): Promise<{ google: boolean }> {
+  async providers(): Promise<{ google: boolean }> {
     try {
       const res = await fetch(`${this.url}/auth/v1/settings`, { headers: { apikey: this.key } });
       const settings = (await res.json()) as { external?: Record<string, boolean> };
@@ -180,16 +189,16 @@ export class SupabaseStore implements Store {
     this.user = toUser(res.data.user);
     // Keep the name shown on my images' "Shared by" badges current.
     check(await this.sb.from('images').update({ owner_name: name }).eq('owner_id', this.uid()));
+    this.emit();
   }
 
-  onAuthChange(fn: () => void): () => void {
-    const { data } = this.sb.auth.onAuthStateChange((_event, session) => {
-      const before = this.user?.id ?? null;
-      this.user = toUser(session?.user);
-      // Only re-route when the person changes (sign in / out), not on token refreshes.
-      if (before !== (this.user?.id ?? null)) fn();
-    });
-    return () => data.subscription.unsubscribe();
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  private emit(): void {
+    for (const fn of this.listeners) fn();
   }
 
   // ---------- images ----------

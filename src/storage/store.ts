@@ -1,6 +1,7 @@
-// The storage interface the screens use. Two implementations:
-//   local.ts    - IndexedDB in this browser (used when Supabase isn't configured)
-//   supabase.ts - Supabase Postgres + Storage, with sign-in and sharing
+// What the screens need from a backend, split at its real seams:
+//   LibraryStore - images and annotations     adapters: IndexedDB (local.ts), Supabase (supabase.ts)
+//   Account      - who is annotating, by name adapters: this browser (local.ts), Supabase user
+//   Auth         - signing in                 adapter:  Supabase only; the browser-only build has none
 
 import type { AnnotationDoc, ImageStatus } from '../io/schema';
 
@@ -47,10 +48,37 @@ export interface PreparedImage {
 /** 'mine' = images I own; 'shared' = other people's images shared with everyone. */
 export type LibraryScope = 'mine' | 'shared';
 
-export interface Store {
-  readonly kind: 'local' | 'supabase';
+/** Images and the current user's annotations of them. */
+export interface LibraryStore {
+  /** Where the data lives, for the "Saved in this browser" / "Saved online" labels. */
+  readonly location: 'browser' | 'online';
+  /** Images can be shared with other signed-in users (online only). */
+  readonly canShare: boolean;
 
+  listImages(scope: LibraryScope): Promise<ImageSummary[]>;
+  getImage(id: string): Promise<{ record: ImageRecord; blob: Blob }>;
+  /** Returns 'duplicate' if the same image (by SHA-256) is already in my library. */
+  addImage(image: PreparedImage): Promise<ImageRecord | 'duplicate'>;
+  deleteImage(id: string): Promise<void>;
+  /** Only when `canShare`. */
+  setShared(id: string, shared: boolean): Promise<void>;
+
+  /** The current user's annotation of an image. */
+  getAnnotation(imageId: string): Promise<AnnotationDoc | null>;
+  saveAnnotation(imageId: string, doc: AnnotationDoc): Promise<void>;
+}
+
+/** Who is annotating: the name stamped on annotations. */
+export interface Account {
+  /** Null only when nobody is signed in (online version). */
   currentUser(): User | null;
+  setDisplayName(name: string): Promise<void>;
+  /** Called when the person or their name changes. */
+  onChange(fn: () => void): () => void;
+}
+
+/** Signing in and out. Only the online version has one. */
+export interface Auth {
   signInWithPassword(email: string, password: string): Promise<void>;
   /** 'confirm_email' when the project requires confirming the address before the first sign-in. */
   signUp(name: string, email: string, password: string): Promise<'signed_in' | 'confirm_email'>;
@@ -62,21 +90,15 @@ export interface Store {
   /** True right after arriving from a password-reset link. */
   readonly passwordRecovery: boolean;
   /** Which optional sign-in methods are switched on for this project. */
-  authProviders(): Promise<{ google: boolean }>;
+  providers(): Promise<{ google: boolean }>;
   signOut(): Promise<void>;
-  setDisplayName(name: string): Promise<void>;
-  onAuthChange(fn: () => void): () => void;
+}
 
-  listImages(scope: LibraryScope): Promise<ImageSummary[]>;
-  getImage(id: string): Promise<{ record: ImageRecord; blob: Blob }>;
-  /** Returns 'duplicate' if the same image (by SHA-256) is already in my library. */
-  addImage(image: PreparedImage): Promise<ImageRecord | 'duplicate'>;
-  deleteImage(id: string): Promise<void>;
-  setShared(id: string, shared: boolean): Promise<void>;
-
-  /** The current user's annotation of an image. */
-  getAnnotation(imageId: string): Promise<AnnotationDoc | null>;
-  saveAnnotation(imageId: string, doc: AnnotationDoc): Promise<void>;
+/** Everything the app runs on. `auth` is null in the browser-only version. */
+export interface Backend {
+  library: LibraryStore;
+  account: Account;
+  auth: Auth | null;
 }
 
 /** Library order, also used for previous/next navigation: by filename, numbers in natural order. */

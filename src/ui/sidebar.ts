@@ -5,7 +5,6 @@ import { DEFAULT_DISPLAY, type Channel, type DisplaySettings } from '../canvas/f
 import { INNER_COLOR, OUTER_COLOR, RAY_KEPT_COLOR, RAY_REJECTED_COLOR } from '../canvas/render';
 import type { Cell } from '../io/schema';
 import type { CellMeasurements, MeasurementSettings } from '../measure/measure';
-import type { AppState } from '../state';
 import { icon } from './icons';
 
 const CHANNEL_LABELS: Record<Channel, string> = {
@@ -103,8 +102,20 @@ export interface CellPanelCallbacks {
   onToggleBand(show: boolean): void;
 }
 
+/** What the cell list shows. */
+export interface CellListView {
+  hasImage: boolean;
+  /** A cell is being drawn (Add cell is disabled meanwhile). */
+  drawing: boolean;
+  cells: readonly Cell[];
+  selectedId: number | null;
+  /** Changes whenever the cells change; the list is only rebuilt then. */
+  revision: number;
+  showBand: boolean;
+}
+
 export interface CellPanel {
-  update(state: AppState): void;
+  update(view: CellListView): void;
 }
 
 export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): CellPanel {
@@ -135,23 +146,23 @@ export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): 
   });
 
   let lastKey = '';
-  function update(state: AppState): void {
-    addBtn.disabled = !state.image || !!state.draft;
-    band.checked = state.showBand;
+  function update(view: CellListView): void {
+    addBtn.disabled = !view.hasImage || view.drawing;
+    band.checked = view.showBand;
 
-    const key = `${state.revision}|${state.selectedId}|${!!state.image}`;
+    const key = `${view.revision}|${view.selectedId}|${view.hasImage}`;
     if (key === lastKey) return;
     lastKey = key;
 
-    if (state.cells.length === 0) {
+    if (view.cells.length === 0) {
       list.innerHTML = `<li class="empty-list">${
-        state.image ? 'No cells yet. Click “Add cell” to mark the first one.' : 'Open an image to start.'
+        view.hasImage ? 'No cells yet. Click “Add cell” to mark the first one.' : 'Open an image to start.'
       }</li>`;
       return;
     }
-    list.innerHTML = state.cells
+    list.innerHTML = view.cells
       .map((c) => {
-        const selected = c.id === state.selectedId;
+        const selected = c.id === view.selectedId;
         return /* html */ `
         <li data-id="${c.id}" class="${selected ? 'selected' : ''}">
           <button class="cell-row" data-act="select" title="Select this cell to see all its measurements">
@@ -238,13 +249,13 @@ function cellDetail(c: Cell): string {
 // ---------------------------------------------------------------------------
 
 export interface MeasurementControls {
-  sync(): void;
+  /** Show these values (e.g. after a keyboard shortcut or loading an annotation). */
+  sync(view: { showRays: boolean; settings: Readonly<MeasurementSettings> }): void;
 }
 
 export function mountMeasurementControls(
   container: HTMLElement,
-  state: AppState,
-  onChange: (settingsChanged: boolean) => void,
+  on: { rays(show: boolean): void; settings(change: Partial<MeasurementSettings>): void },
 ): MeasurementControls {
   container.innerHTML = /* html */ `
     <label class="switch" title="Show the lines used to measure the selected cell. Shortcut: R">
@@ -265,27 +276,20 @@ export function mountMeasurementControls(
   const rays = container.querySelector<HTMLInputElement>('[data-act="rays"]')!;
   const num = container.querySelector<HTMLInputElement>('#meas-rays')!;
   const mad = container.querySelector<HTMLInputElement>('[data-act="mad"]')!;
-  const s: MeasurementSettings = state.measurement;
+  let lastRays = 32;
 
-  function sync(): void {
-    rays.checked = state.showRays;
-    num.value = String(s.num_rays);
-    mad.checked = s.mad_reject;
+  function sync(view: { showRays: boolean; settings: Readonly<MeasurementSettings> }): void {
+    rays.checked = view.showRays;
+    num.value = String(view.settings.num_rays);
+    mad.checked = view.settings.mad_reject;
+    lastRays = view.settings.num_rays;
   }
-  rays.addEventListener('change', () => {
-    state.showRays = rays.checked;
-    onChange(false);
-  });
+  rays.addEventListener('change', () => on.rays(rays.checked));
   num.addEventListener('change', () => {
     const n = Math.round(Number(num.value));
-    if (Number.isFinite(n) && n >= 4 && n <= 360) s.num_rays = n;
-    sync();
-    onChange(true);
+    if (Number.isFinite(n) && n >= 4 && n <= 360) on.settings({ num_rays: n });
+    else num.value = String(lastRays);
   });
-  mad.addEventListener('change', () => {
-    s.mad_reject = mad.checked;
-    onChange(true);
-  });
-  sync();
+  mad.addEventListener('change', () => on.settings({ mad_reject: mad.checked }));
   return { sync };
 }

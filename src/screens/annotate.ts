@@ -1,44 +1,28 @@
-// Annotation screen: canvas with zoom/pan, floating toolbar, inspector.
+// Annotation screen: wires the DOM to the annotation session (what is being
+// annotated), the gesture recognizer (what the pointer means), the annotation
+// file (loading and autosave) and the renderer (what is drawn).
 
+import { AnnotationSession } from '../annotation/session';
 import { applyDisplayFilters, CHANNELS } from '../canvas/filters';
-import { closeRadiusPx, INNER_COLOR, OUTER_COLOR, render } from '../canvas/render';
+import { closeRadiusPx, INNER_COLOR, OUTER_COLOR, render, type Scene } from '../canvas/render';
 import { fitToWindow, pan, pinchViewport, screenToImage, zoomAt, type Point, type Viewport } from '../canvas/viewport';
-import { History, type Snapshot } from '../history';
-import { fromDoc, toDoc } from '../io/annotation';
-import type { Cell, DrawMode } from '../io/schema';
-import { pointInPolygon } from '../measure/geometry';
-import { measureCell } from '../measure/measure';
-import { createState, notify, subscribe, type AppState, type LoadedImage } from '../state';
-import { compareImages, type ImageRecord, type ImageSummary, type Store } from '../storage/store';
-import {
-  addPoint,
-  canClose,
-  clampToImage,
-  closePolygon,
-  isNearFirstPoint,
-  removeLastPoint,
-  startDraft,
-} from '../tools/draw';
-import { closeStroke, shouldSample } from '../tools/freehand';
-import { deleteVertex, hitEdge, hitVertex, insertVertex, moveVertex, type Ring } from '../tools/edit';
+import { GestureRecognizer, type GestureEvent, type PointerKind } from '../input/gestures';
+import type { DrawMode } from '../io/schema';
+import { createViewState, type LoadedImage, type ViewState } from '../state';
+import { AnnotationFile } from '../storage/annotation-file';
+import { compareImages, type Backend, type ImageRecord, type ImageSummary } from '../storage/store';
 import { icon } from '../ui/icons';
 import { mountCellPanel, mountDisplayControls, mountMeasurementControls } from '../ui/sidebar';
 import { toast } from '../ui/toast';
 import { annotatorName, mountUserMenu } from '../ui/user';
 
-/** A left-button press that moves less than this (screen px) is a click, not a pan. */
-const CLICK_SLOP = { mouse: 4, touch: 8 };
 /** A click this close (screen px) to the previous point is ignored rather than added twice. */
 const DUPLICATE_PX = 3;
 /** Grab radius (screen px) for points and edges of the selected cell. */
 const HANDLE_PX = { mouse: 8, touch: 18 };
 const ZOOM_STEP = 1.25;
-/** A click arriving this soon (ms) after a drag, stroke or pinch belongs to it and is ignored. */
-const CLICK_AFTER_GESTURE_MS = 350;
-/** Autosave this long after the last change. */
-const SAVE_DELAY_MS = 800;
-const SAVE_RETRY_MS = 5000;
 const DISPLAY_KEY = 'display';
+const DRAW_MODE_KEY = 'drawMode';
 /** Freehand: spacing of stroke samples and simplification tolerance, in screen px. */
 const STROKE_SAMPLE_PX = 1.5;
 const STROKE_SIMPLIFY_PX = 2;
@@ -119,7 +103,8 @@ const TEMPLATE = /* html */ `
   </main>
 </div>`;
 
-export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: string): () => void {
+export function mountAnnotateScreen(root: HTMLElement, backend: Backend, imageId: string): () => void {
+  const { library, account, auth } = backend;
   root.innerHTML = TEMPLATE;
   // Everything registered on window is removed when the screen is left.
   const abort = new AbortController();
@@ -130,63 +115,53 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     return el;
   };
 
-  const state: AppState = createState();
+  const view: ViewState = createViewState();
   try {
-    Object.assign(state.display, JSON.parse(localStorage.getItem(DISPLAY_KEY) ?? '{}'));
+    Object.assign(view.display, JSON.parse(localStorage.getItem(DISPLAY_KEY) ?? '{}'));
   } catch {
     // Ignore unreadable saved display settings.
   }
-  // Dev-only handle for poking at state from the console and browser tests.
-  if (import.meta.env.DEV) (window as unknown as { __state: AppState }).__state = state;
+  /** Set once the image and its annotation have loaded. */
+  let session: AnnotationSession | null = null;
+  let file: AnnotationFile | null = null;
+  const cleanups: (() => void)[] = [];
+
   const wrap = ref<HTMLDivElement>('wrap');
   const canvas = ref<HTMLCanvasElement>('canvas');
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2D canvas not supported');
+  const toolbar = ref('toolbar');
 
-  // ---------- undo / redo ----------
-  const history = new History();
-  const snapshot = (): Snapshot => ({ cells: state.cells, nextCellId: state.nextCellId });
-  /** Call before every change to the cells. */
-  const recordUndo = () => history.record(snapshot());
-
-  function restore(s: Snapshot | null): void {
-    if (!s) return;
-    state.cells = s.cells;
-    state.nextCellId = s.nextCellId;
-    // Settings may have changed since the snapshot was taken.
-    for (const c of state.cells) c.measurements = measureCell(c.outer, c.inner, state.measurement);
-    if (!state.cells.some((c) => c.id === state.selectedId)) state.selectedId = null;
-    state.selectedVertex = null;
-    state.hover = null;
-    state.revision++;
-    notify();
-  }
-  const undo = () => (state.draft ? undoPoint() : restore(history.undo(snapshot())));
-  const redo = () => restore(history.redo(snapshot()));
-
-  /** Apply `change` to a cell's outlines, then re-measure it. */
-  function updateCell(id: number, change: (c: Cell) => void): void {
-    const c = state.cells.find((x) => x.id === id);
-    if (!c) return;
-    change(c);
-    c.measurements = measureCell(c.outer, c.inner, state.measurement);
-    state.revision++;
-  }
-
-  // ---------- canvas sizing + redraw ----------
+  // ---------- drawing ----------
   let cssW = 0;
   let cssH = 0;
   let frameRequested = false;
 
-  function requestRedraw(): void {
+  /** Update the controls now and redraw the canvas on the next frame. */
+  function invalidate(): void {
+    updateChrome();
     if (frameRequested) return;
     frameRequested = true;
     requestAnimationFrame(() => {
       frameRequested = false;
       const dpr = window.devicePixelRatio || 1;
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
-      render(ctx!, state, cssW, cssH);
+      render(ctx!, scene(), cssW, cssH);
     });
+  }
+
+  function scene(): Scene {
+    const s = session;
+    const sel = s?.selectedCell ?? null;
+    const draft = s?.draft ?? null;
+    return {
+      image: view.image?.display ?? null,
+      viewport: view.viewport,
+      cells: s?.cells ?? [],
+      showBand: view.showBand,
+      selection: sel ? { cell: sel, vertex: s!.selectedVertex, hover: view.hover, rays: view.showRays } : null,
+      drawing: draft ? { draft, cursor: view.cursor, closeRadiusPx: closeRadiusPx(view.pointerType) } : null,
+    };
   }
 
   const resizeObserver = new ResizeObserver(() => {
@@ -197,15 +172,16 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     canvas.height = Math.round(cssH * dpr);
     // Rotating a phone or resizing the window keeps a fitted image fitted.
     if (fitted) fit();
-    requestRedraw();
+    invalidate();
   });
   resizeObserver.observe(wrap);
 
+  // ---------- viewport ----------
   /** True while the view is exactly "fit to window"; any zoom or pan clears it. */
   let fitted = false;
 
   function setViewport(v: Viewport): void {
-    state.viewport = v;
+    view.viewport = v;
     fitted = false;
   }
 
@@ -227,31 +203,39 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   }
 
   function fit(): void {
-    if (!state.image) return;
+    if (!view.image) return;
     // Read live sizes: the ResizeObserver may not have reported yet.
     const { top, bottom } = fitInsets();
     const pad = wrap.clientWidth < 600 ? 10 : 20;
-    const v = fitToWindow(state.image.width, state.image.height, wrap.clientWidth, wrap.clientHeight - top - bottom, pad);
-    state.viewport = { ...v, ty: v.ty + top };
+    const v = fitToWindow(view.image.width, view.image.height, wrap.clientWidth, wrap.clientHeight - top - bottom, pad);
+    view.viewport = { ...v, ty: v.ty + top };
     fitted = true;
-    notify();
+    invalidate();
   }
 
   function zoomBy(factor: number): void {
-    if (!state.image) return;
-    setViewport(zoomAt(state.viewport, [wrap.clientWidth / 2, wrap.clientHeight / 2], factor));
-    notify();
+    if (!view.image) return;
+    setViewport(zoomAt(view.viewport, [wrap.clientWidth / 2, wrap.clientHeight / 2], factor));
+    invalidate();
   }
 
-  // ---------- image loading ----------
-  let record: ImageRecord | null = null;
-  /** Creation time of this user's annotation, kept across saves. */
-  let annotationCreated: string | null = null;
+  const screenPoint = (e: { clientX: number; clientY: number }): Point => {
+    const r = canvas.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  };
+  const toImage = (p: Point): Point => screenToImage(view.viewport, p);
+  /** A screen-pixel distance in image pixels at the current zoom. */
+  const imagePx = (screenPx: number) => screenPx / view.viewport.scale;
+  const handlePx = () => (view.pointerType === 'touch' ? HANDLE_PX.touch : HANDLE_PX.mouse);
 
-  async function loadImage(): Promise<void> {
+  // ---------- loading ----------
+  async function load(): Promise<void> {
     try {
-      const [{ record: rec, blob }, doc] = await Promise.all([store.getImage(imageId), store.getAnnotation(imageId)]);
-      const bitmap = await createImageBitmap(blob);
+      const f = await AnnotationFile.open(library, imageId, {
+        annotator: () => annotatorName(account.currentUser()),
+        onError: (e) => toast(`Could not save: ${e.message}. Retrying…`, 'error'),
+      });
+      const bitmap = await createImageBitmap(f.blob);
       if (signal.aborted) return bitmap.close();
       const { width, height } = bitmap;
       const display = document.createElement('canvas');
@@ -260,25 +244,31 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
       const dctx = display.getContext('2d', { willReadFrequently: true })!;
       dctx.drawImage(bitmap, 0, 0);
       bitmap.close();
-      const pixels = dctx.getImageData(0, 0, width, height);
+      view.image = { filename: f.record.filename, width, height, pixels: dctx.getImageData(0, 0, width, height), display };
 
-      record = rec;
-      state.image = { filename: rec.filename, width, height, pixels, display };
-      if (doc) {
-        const content = fromDoc(doc);
-        // Keep the same settings object: the measurement panel holds a reference to it.
-        Object.assign(state.measurement, content.measurement);
-        state.cells = content.cells;
-        state.nextCellId = content.nextCellId;
-        state.status = content.status;
-        annotationCreated = doc.created;
-      }
-      state.revision++;
-      savedRevision = state.revision;
-      measurementControls.sync();
+      file = f;
+      session = new AnnotationSession({
+        width,
+        height,
+        content: f.initial,
+        drawMode: localStorage.getItem(DRAW_MODE_KEY) === 'freehand' ? 'freehand' : 'points',
+      });
+      let savedRevision = session.revision;
+      cleanups.push(
+        session.subscribe(() => {
+          if (session!.revision !== savedRevision) {
+            savedRevision = session!.revision;
+            file!.changed(session!.toContent());
+          }
+          updateHover();
+          invalidate();
+        }),
+        f.onState(() => updateSavePill()),
+      );
+      measurementControls.sync({ showRays: view.showRays, settings: session.measurement });
       refilter();
       fit();
-      void loadNeighbours(rec);
+      void loadNeighbours(f.record);
     } catch (e) {
       if (signal.aborted) return;
       ref('loadTitle').textContent = 'Could not open this image';
@@ -287,57 +277,18 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     }
   }
 
-  // ---------- autosave ----------
-  let savedRevision = 0;
-  let saving = false;
-  let saveFailed = false;
-  let saveTimer = 0;
-
-  function scheduleSave(delay = SAVE_DELAY_MS): void {
-    clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => void saveNow(), delay);
-  }
-
-  async function saveNow(): Promise<void> {
-    clearTimeout(saveTimer);
-    if (!record || saving || state.revision === savedRevision) return;
-    const rev = state.revision;
-    const doc = toDoc(
-      { cells: state.cells, status: state.status, measurement: state.measurement },
-      { filename: record.filename, sha256: record.sha256, width: record.width, height: record.height },
-      annotatorName(store.currentUser()),
-      annotationCreated,
-    );
-    saving = true;
-    updateSavePill();
-    try {
-      await store.saveAnnotation(record.id, doc);
-      annotationCreated = doc.created;
-      savedRevision = rev;
-      saveFailed = false;
-    } catch (e) {
-      if (!saveFailed) toast(`Could not save: ${(e as Error).message}. Retrying…`, 'error');
-      saveFailed = true;
-      scheduleSave(SAVE_RETRY_MS);
-    } finally {
-      saving = false;
-      if (!saveFailed && state.revision !== savedRevision) scheduleSave();
-      updateSavePill();
-    }
-  }
-
   const savePill = ref('savePill');
   function updateSavePill(): void {
-    if (!record) {
+    if (!file) {
       savePill.className = 'hidden';
       return;
     }
-    const pending = saving || state.revision !== savedRevision;
-    const [cls, text] = saveFailed
-      ? ['bad', "Couldn't save · retrying"]
-      : pending
-        ? ['info', 'Saving…']
-        : ['ok', store.kind === 'local' ? 'Saved in this browser' : 'Saved'];
+    const [cls, text] =
+      file.state === 'failed'
+        ? ['bad', "Couldn't save · retrying"]
+        : file.state === 'saving'
+          ? ['info', 'Saving…']
+          : ['ok', library.location === 'browser' ? 'Saved in this browser' : 'Saved'];
     savePill.className = `pill ${cls} save-pill`;
     savePill.textContent = text;
     savePill.title = text;
@@ -347,17 +298,16 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   // ---------- status + previous / next ----------
   const doneBtn = ref<HTMLButtonElement>('done');
   doneBtn.addEventListener('click', () => {
-    state.status = state.status === 'done' ? 'in_progress' : 'done';
-    state.revision++;
-    notify();
-    if (state.status === 'done') toast('Marked as done.');
+    if (!session) return;
+    session.setStatus(session.status === 'done' ? 'in_progress' : 'done');
+    if (session.status === 'done') toast('Marked as done.');
   });
 
   let neighbours: ImageSummary[] = [];
   async function loadNeighbours(rec: ImageRecord): Promise<void> {
-    const scope = rec.owner_id === store.currentUser()?.id ? 'mine' : 'shared';
+    const scope = rec.owner_id === account.currentUser()?.id ? 'mine' : 'shared';
     try {
-      neighbours = (await store.listImages(scope)).sort(compareImages);
+      neighbours = (await library.listImages(scope)).sort(compareImages);
     } catch {
       neighbours = [];
     }
@@ -375,20 +325,20 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   }
   async function go(delta: number): Promise<void> {
     const target = neighbours[neighbourIndex() + delta];
-    if (!target || state.draft) return;
-    await saveNow();
+    if (!target || session?.draft) return;
+    await file?.flush();
     location.hash = `#/image/${target.id}`;
   }
   ref('prev').addEventListener('click', () => void go(-1));
   ref('next').addEventListener('click', () => void go(1));
-  mountUserMenu(ref('user'), store);
+  mountUserMenu(ref('user'), account, auth);
 
   // ---------- display filters ----------
   // Recomputed into the image's offscreen canvas only when settings change,
   // and at most once per frame while a slider is being dragged.
   let refilterRequested = false;
   function refilter(): void {
-    if (state.image) applyFilters(state.image);
+    if (view.image) applyFilters(view.image);
   }
   function requestRefilter(): void {
     if (refilterRequested) return;
@@ -396,41 +346,36 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     requestAnimationFrame(() => {
       refilterRequested = false;
       refilter();
-      notify();
+      invalidate();
     });
   }
   function applyFilters(img: LoadedImage): void {
     const out = new ImageData(img.width, img.height);
-    applyDisplayFilters(img.pixels, state.display, out.data);
+    applyDisplayFilters(img.pixels, view.display, out.data);
     img.display.getContext('2d')!.putImageData(out, 0, 0);
   }
   function displayChanged(): void {
-    localStorage.setItem(DISPLAY_KEY, JSON.stringify(state.display));
+    localStorage.setItem(DISPLAY_KEY, JSON.stringify(view.display));
     requestRefilter();
   }
-  const displayControls = mountDisplayControls(ref('displaySection'), state.display, displayChanged);
+  const displayControls = mountDisplayControls(ref('displaySection'), view.display, displayChanged);
 
   ref('fit').addEventListener('click', fit);
   ref('zoomIn').addEventListener('click', () => zoomBy(ZOOM_STEP));
   ref('zoomOut').addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
 
-  // ---------- zoom ----------
-  const screenPoint = (e: { clientX: number; clientY: number }): Point => {
-    const r = canvas.getBoundingClientRect();
-    return [e.clientX - r.left, e.clientY - r.top];
-  };
-
+  // ---------- wheel and trackpad zoom ----------
   canvas.addEventListener(
     'wheel',
     (e) => {
       e.preventDefault();
-      if (!state.image) return;
+      if (!view.image) return;
       // Normalise line/page deltas to pixels. Trackpad pinch arrives as ctrl+wheel
       // with small deltas, so it gets a stronger factor.
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? cssH : 1;
       const k = e.ctrlKey ? 0.01 : 0.0015;
-      setViewport(zoomAt(state.viewport, screenPoint(e), Math.exp(-e.deltaY * unit * k)));
-      notify();
+      setViewport(zoomAt(view.viewport, screenPoint(e), Math.exp(-e.deltaY * unit * k)));
+      invalidate();
     },
     { passive: false },
   );
@@ -439,383 +384,178 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   let gestureStartScale = 1;
   canvas.addEventListener('gesturestart', (e) => {
     e.preventDefault();
-    gestureStartScale = state.viewport.scale;
+    gestureStartScale = view.viewport.scale;
   });
   canvas.addEventListener('gesturechange', (e) => {
     e.preventDefault();
     const ge = e as unknown as { scale: number; clientX: number; clientY: number };
-    const factor = (gestureStartScale * ge.scale) / state.viewport.scale;
-    setViewport(zoomAt(state.viewport, screenPoint(ge), factor));
-    notify();
+    setViewport(zoomAt(view.viewport, screenPoint(ge), (gestureStartScale * ge.scale) / view.viewport.scale));
+    invalidate();
   });
 
-  // ---------- pan + click ----------
-  // Middle-drag or Space+drag pans at once. A left-drag (or one finger) also
-  // pans once it moves past the click slop, so the image can be moved with a
-  // plain mouse or a finger; a press that stays put is a click / tap.
-  // Two fingers pinch to zoom and pan.
+  // ---------- pointer gestures ----------
+  // The recognizer decides tap vs drag vs pan vs pinch; this maps each
+  // gesture onto the session (or the viewport).
   let spaceDown = false;
-  let drag: { id: number; startX: number; startY: number; lastX: number; lastY: number; panning: boolean } | null =
-    null;
-  /** Clicks before this time come from a drag, stroke or pinch that just ended. */
-  let ignoreClicksUntil = 0;
-  const swallowNextClick = () => (ignoreClicksUntil = performance.now() + CLICK_AFTER_GESTURE_MS);
-  /** Point of the selected cell being dragged; `moved` defers the undo entry until it actually moves. */
-  let vertexDrag: { id: number; ring: Ring; index: number; moved: boolean } | null = null;
-  /** Fingers currently on the canvas, in screen px. */
-  const pointers = new Map<number, Point>();
-  let pinch: { start: Viewport; a: number; b: number; a0: Point; b0: Point } | null = null;
-  const isTouch = () => state.pointerType === 'touch';
-  const handlePx = () => (isTouch() ? HANDLE_PX.touch : HANDLE_PX.mouse);
-  const clickSlop = () => (isTouch() ? CLICK_SLOP.touch : CLICK_SLOP.mouse);
-
-  /** A second finger landed: drop whatever the first one started and pinch instead. */
-  function startPinch(): void {
-    drag = null;
-    vertexDrag = null; // a move already made stays, with its undo entry
-    if (state.draft?.stroke) state.draft = { ...state.draft, stroke: null }; // discard, don't close
-    const [[a, a0], [b, b0]] = [...pointers.entries()];
-    pinch = { start: state.viewport, a, b, a0, b0 };
-    state.cursor = null;
-    state.hover = null;
-    notify();
-  }
-
-  canvas.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 && e.button !== 1) return;
-    if (e.button === 1) e.preventDefault();
-    canvas.setPointerCapture(e.pointerId);
-    state.pointerType = e.pointerType || 'mouse';
-    const [x, y] = screenPoint(e);
-    if (e.pointerType === 'touch') {
-      pointers.set(e.pointerId, [x, y]);
-      if (pointers.size === 2) return startPinch();
-      if (pointers.size > 2 || pinch) return;
-    }
-    if (e.button === 0 && !spaceDown && startVertexDrag([x, y])) return;
-    if (e.button === 0 && !spaceDown && state.draft?.mode === 'freehand') {
-      state.draft = { ...state.draft, stroke: [screenToImage(state.viewport, [x, y])] };
-      notify();
-      return;
-    }
-    drag = { id: e.pointerId, startX: x, startY: y, lastX: x, lastY: y, panning: e.button === 1 || spaceDown };
-    updateCursorStyle();
-  });
-
-  /** Grab a point of the selected cell, or press on an edge to add one there. */
-  function startVertexDrag(screen: Point): boolean {
-    const cell = state.cells.find((c) => c.id === state.selectedId);
-    if (!cell || state.draft || !state.image) return false;
-    const p = screenToImage(state.viewport, screen);
-    const tol = handlePx() / state.viewport.scale;
-    const v = hitVertex(cell, p, tol);
-    if (v) {
-      vertexDrag = { id: cell.id, ...v, moved: false };
-      state.selectedVertex = v;
-      notify();
-      return true;
-    }
-    const edge = hitEdge(cell, p, tol);
-    if (edge) {
-      recordUndo();
-      updateCell(cell.id, (c) => (c[edge.ring] = insertVertex(c[edge.ring], edge.index, edge.point)));
-      vertexDrag = { id: cell.id, ring: edge.ring, index: edge.index + 1, moved: true };
-      state.selectedVertex = { ring: edge.ring, index: edge.index + 1 };
-      state.hover = null;
-      notify();
-      return true;
-    }
-    return false;
-  }
-
-  canvas.addEventListener('pointermove', (e) => {
-    const p = screenPoint(e);
-    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, p);
-    if (pinch) {
-      const a1 = pointers.get(pinch.a);
-      const b1 = pointers.get(pinch.b);
-      if (a1 && b1) setViewport(pinchViewport(pinch.start, pinch.a0, pinch.b0, a1, b1));
-      notify();
-      return;
-    }
-    if (e.pointerType === 'touch' && !pointers.has(e.pointerId)) return;
-    if (state.draft?.stroke) {
-      const ip = screenToImage(state.viewport, p);
-      const stroke = state.draft.stroke;
-      if (shouldSample(stroke, ip, STROKE_SAMPLE_PX / state.viewport.scale)) stroke.push(ip);
-    } else if (vertexDrag) {
-      const img = state.image!;
-      const ip = clampToImage(screenToImage(state.viewport, p), img.width, img.height);
-      if (!vertexDrag.moved) {
-        recordUndo();
-        vertexDrag.moved = true;
-      }
-      const { ring, index } = vertexDrag;
-      updateCell(vertexDrag.id, (c) => (c[ring] = moveVertex(c[ring], index, ip)));
-    } else if (drag && drag.id === e.pointerId) {
-      if (!drag.panning && Math.hypot(p[0] - drag.startX, p[1] - drag.startY) > clickSlop()) {
-        drag.panning = true;
-        updateCursorStyle();
-      }
-      if (drag.panning) {
-        setViewport(pan(state.viewport, p[0] - drag.lastX, p[1] - drag.lastY));
-      }
-      drag.lastX = p[0];
-      drag.lastY = p[1];
-    }
-    state.cursor = state.image ? screenToImage(state.viewport, p) : null;
-    updateHover();
-    notify();
-  });
-
-  function updateHover(): void {
-    const cell = state.cells.find((c) => c.id === state.selectedId);
-    // Fingers don't hover, so there is nothing to preview for touch.
-    if (!cell || !state.cursor || state.draft || drag || vertexDrag || isTouch()) {
-      state.hover = null;
-    } else {
-      const tol = handlePx() / state.viewport.scale;
-      const vertex = hitVertex(cell, state.cursor, tol);
-      state.hover = { vertex, edge: vertex ? null : hitEdge(cell, state.cursor, tol) };
-    }
-    updateCursorStyle();
-  }
-
-  const endDrag = (e: PointerEvent) => {
-    pointers.delete(e.pointerId);
-    if (e.pointerType === 'touch') {
-      // No hover after the finger lifts: drop the cursor so nothing sticks there.
-      state.cursor = null;
-      state.hover = null;
-      notify();
-    }
-    if (pinch) {
-      // Stay in the pinch until every finger has lifted.
-      if (pointers.size === 0) pinch = null;
-      swallowNextClick();
-      return;
-    }
-    if (state.draft?.stroke) {
-      finishStroke();
-      swallowNextClick();
-      return;
-    }
-    if (vertexDrag) {
-      vertexDrag = null;
-      swallowNextClick();
-      updateCursorStyle();
-      return;
-    }
-    if (!drag || drag.id !== e.pointerId) return;
-    if (drag.panning) swallowNextClick();
-    drag = null;
-    updateCursorStyle();
-  };
-  canvas.addEventListener('pointerup', endDrag);
-  canvas.addEventListener('pointercancel', endDrag);
-  canvas.addEventListener('pointerleave', () => {
-    state.cursor = null;
-    notify();
-  });
-
-  canvas.addEventListener('click', (e) => {
-    if (performance.now() < ignoreClicksUntil) return;
-    if (!state.image) return;
-    handleClick(screenPoint(e), e.detail);
-  });
-
-  function handleClick(screen: Point, clickCount: number): void {
-    const img = state.image!;
-    const d = state.draft;
-    if (d?.mode === 'freehand') return; // strokes are handled by pointerdown/up
-    if (d) {
-      // The first click of a double-click already placed a point; the second closes.
-      if (clickCount >= 2) {
-        if (d.points.length > 0) finishShape();
+  let pinchStartViewport: Viewport = view.viewport;
+  const gestures = new GestureRecognizer({
+    pressStart(p) {
+      const s = session;
+      if (!s) return false;
+      // Freehand traces and grabbed points own the drag; anything else pans or taps.
+      if (s.draft?.mode === 'freehand') return s.beginStroke(toImage(p));
+      return s.grab(toImage(p), imagePx(handlePx()));
+    },
+    dragMove(p) {
+      if (session?.draft?.stroke) session.extendStroke(toImage(p), imagePx(STROKE_SAMPLE_PX));
+      else session?.dragTo(toImage(p));
+    },
+    dragEnd() {
+      if (session?.draft?.stroke) {
+        if (!session.endStroke(imagePx(STROKE_SIMPLIFY_PX))) flashBanner();
+      } else session?.release();
+    },
+    dragCancel() {
+      session?.cancelStroke();
+      session?.release();
+    },
+    tap(p, count, kind) {
+      const s = session;
+      if (!s) return;
+      const d = s.draft;
+      if (d?.mode === 'freehand') return; // traces are drags
+      if (!d) {
+        s.selectAt(toImage(p));
         return;
       }
-      const p = clampToImage(screenToImage(state.viewport, screen), img.width, img.height);
-      const last = d.points[d.points.length - 1];
-      const tooClose = last && Math.hypot(p[0] - last[0], p[1] - last[1]) * state.viewport.scale < DUPLICATE_PX;
-      if (isNearFirstPoint(d, p, closeRadiusPx(state.pointerType) / state.viewport.scale)) finishShape();
-      else if (!tooClose) state.draft = addPoint(d, p);
-      notify();
-      return;
-    }
-    selectCell(cellAt(screenToImage(state.viewport, screen)));
-    updateHover();
-  }
+      // The first tap of a double-tap already placed a point; the second closes.
+      if (count >= 2) {
+        if (d.points.length > 0 && !s.finishShape()) flashBanner();
+        return;
+      }
+      s.placePoint(toImage(p), imagePx(closeRadiusPx(kind)), imagePx(DUPLICATE_PX));
+    },
+    pan(dx, dy) {
+      setViewport(pan(view.viewport, dx, dy));
+      invalidate();
+    },
+    pinchStart() {
+      pinchStartViewport = view.viewport;
+      view.cursor = null;
+      view.hover = null;
+      invalidate();
+    },
+    pinchMove(a0, b0, a1, b1) {
+      setViewport(pinchViewport(pinchStartViewport, a0, b0, a1, b1));
+      invalidate();
+    },
+    pinchEnd() {},
+    hover(p) {
+      view.cursor = p && view.image ? toImage(p) : null;
+      updateHover();
+      invalidate();
+    },
+  });
 
-  /** The cell whose outer ring contains `p`; the smallest one if they overlap. */
-  function cellAt(p: Point): number | null {
-    let best: { id: number; area: number } | null = null;
-    for (const c of state.cells) {
-      if (!pointInPolygon(p, c.outer)) continue;
-      const area = c.measurements.outer.area;
-      if (!best || area < best.area) best = { id: c.id, area };
+  const feed = (type: GestureEvent['type']) => (e: PointerEvent) => {
+    if (type === 'down') {
+      if (e.button === 1) e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
     }
-    return best?.id ?? null;
-  }
-
-  // ---------- add-cell tool ----------
-  function startAddCell(): void {
-    if (!state.image || state.draft) return;
-    state.draft = startDraft(state.drawMode);
-    state.selectedId = null;
+    const pointerType: PointerKind = e.pointerType === 'touch' || e.pointerType === 'pen' ? e.pointerType : 'mouse';
+    view.pointerType = pointerType;
+    gestures.handle({ type, id: e.pointerId, p: screenPoint(e), pointerType, button: e.button, panKey: spaceDown, time: e.timeStamp });
     updateCursorStyle();
-    notify();
+  };
+  canvas.addEventListener('pointerdown', feed('down'));
+  canvas.addEventListener('pointermove', feed('move'));
+  canvas.addEventListener('pointerup', feed('up'));
+  canvas.addEventListener('pointercancel', feed('cancel'));
+  canvas.addEventListener('pointerleave', feed('leave'));
+
+  /** What a press at the cursor would grab, for hover feedback (mouse and pen only). */
+  function updateHover(): void {
+    const busy = gestures.dragging || gestures.panning || gestures.pinching;
+    view.hover =
+      session && view.cursor && !busy && view.pointerType !== 'touch'
+        ? session.hoverTarget(view.cursor, imagePx(handlePx()))
+        : null;
+    updateCursorStyle();
+  }
+
+  function updateCursorStyle(): void {
+    canvas.style.cursor = gestures.panning
+      ? 'grabbing'
+      : session?.isDragging || view.hover?.vertex
+        ? 'move'
+        : spaceDown
+          ? 'grab'
+          : session?.draft || view.hover?.edge
+            ? 'crosshair'
+            : 'default';
+  }
+
+  // ---------- commands ----------
+  function setDrawMode(mode: DrawMode): void {
+    localStorage.setItem(DRAW_MODE_KEY, mode);
+    session?.setDrawMode(mode);
   }
 
   function finishShape(): void {
-    const d = state.draft;
-    if (!d) return;
-    const result = closePolygon(d);
-    if (!result) {
-      flashBanner();
-      return;
-    }
-    if (result.kind === 'next') {
-      state.draft = result.draft;
-    } else {
-      recordUndo();
-      const id = state.nextCellId++;
-      state.cells.push({
-        id,
-        outer: result.outer,
-        inner: result.inner,
-        flags: [],
-        note: '',
-        draw_mode: d.mode,
-        measurements: measureCell(result.outer, result.inner, state.measurement),
-      });
-      state.revision++;
-      state.draft = null;
-      state.selectedId = id;
-      updateCursorStyle();
-    }
-    notify();
-  }
-
-  /** Freehand: the mouse was released, so close the traced outline. */
-  function finishStroke(): void {
-    const d = state.draft!;
-    const img = state.image!;
-    const poly = closeStroke(d.stroke!, STROKE_SIMPLIFY_PX / state.viewport.scale, img.width, img.height);
-    state.draft = { ...d, stroke: null, points: poly ?? [] };
-    if (poly) finishShape();
-    else flashBanner();
-    notify();
-  }
-
-  function setDrawMode(mode: DrawMode): void {
-    state.drawMode = mode;
-    localStorage.setItem('drawMode', mode);
-    // Switching mid-cell restarts only the outline being drawn now.
-    if (state.draft) state.draft = { ...state.draft, mode, points: [], stroke: null };
-    notify();
-  }
-
-  function undoPoint(): void {
-    if (!state.draft) return;
-    state.draft = removeLastPoint(state.draft);
-    notify();
-  }
-
-  function cancelDraft(): void {
-    if (!state.draft) return;
-    state.draft = null;
-    updateCursorStyle();
-    notify();
-  }
-
-  function selectCell(id: number | null): void {
-    if (id !== state.selectedId) state.selectedVertex = null;
-    state.selectedId = id;
-    notify();
+    if (session && !session.finishShape()) flashBanner();
   }
 
   function deleteCell(id: number): void {
-    if (!confirm(`Delete cell ${id}? You can bring it back with Undo.`)) return;
-    recordUndo();
-    state.cells = state.cells.filter((c) => c.id !== id);
-    if (state.selectedId === id) state.selectedId = null;
-    state.selectedVertex = null;
-    state.revision++;
-    notify();
+    if (session && confirm(`Delete cell ${id}? You can bring it back with Undo.`)) session.deleteCell(id);
   }
 
   /** Delete key: the selected point if there is one, otherwise the selected cell. */
   function deleteSelection(): void {
-    const id = state.selectedId;
-    if (id === null) return;
-    const sv = state.selectedVertex;
-    if (!sv) {
-      deleteCell(id);
-      return;
-    }
-    const cell = state.cells.find((c) => c.id === id)!;
-    const next = deleteVertex(cell[sv.ring], sv.index);
-    if (!next) {
-      toast('An outline needs at least 3 points. Delete the whole cell instead.', 'error');
-      return;
-    }
-    recordUndo();
-    updateCell(id, (c) => (c[sv.ring] = next));
-    state.selectedVertex = null;
-    notify();
-  }
-
-  function updateCursorStyle(): void {
-    canvas.style.cursor =
-      drag?.panning
-        ? 'grabbing'
-        : vertexDrag || state.hover?.vertex
-          ? 'move'
-          : spaceDown
-            ? 'grab'
-            : state.draft || state.hover?.edge
-              ? 'crosshair'
-              : 'default';
+    if (!session) return;
+    const result = session.deletePoint();
+    if (result === 'too_few') toast('An outline needs at least 3 points. Delete the whole cell instead.', 'error');
+    else if (result === 'none' && session.selectedId !== null) deleteCell(session.selectedId);
   }
 
   const cellPanel = mountCellPanel(ref('cellsSection'), {
-    onAdd: startAddCell,
-    onSelect: (id) => selectCell(state.selectedId === id ? null : id),
+    onAdd: () => session?.startCell(),
+    onSelect: (id) => session?.select(session.selectedId === id ? null : id),
     onDelete: deleteCell,
     onToggleBand: (show) => {
-      state.showBand = show;
-      notify();
+      view.showBand = show;
+      invalidate();
     },
   });
 
-  const measurementControls = mountMeasurementControls(ref('measureSection'), state, (settingsChanged) => {
-    if (settingsChanged) remeasureAll();
-    notify();
+  const measurementControls = mountMeasurementControls(ref('measureSection'), {
+    rays: (show) => {
+      view.showRays = show;
+      invalidate();
+    },
+    settings: (change) => {
+      session?.setMeasurement(change);
+      if (session) measurementControls.sync({ showRays: view.showRays, settings: session.measurement });
+    },
   });
 
-  function remeasureAll(): void {
-    for (const c of state.cells) c.measurements = measureCell(c.outer, c.inner, state.measurement);
-    state.revision++;
-  }
-
-  ref('toolSelect').addEventListener('click', () => cancelDraft());
-  ref('toolAdd').addEventListener('click', startAddCell);
-  ref('undo').addEventListener('click', undo);
+  ref('toolSelect').addEventListener('click', () => session?.cancelCell());
+  ref('toolAdd').addEventListener('click', () => session?.startCell());
+  ref('undo').addEventListener('click', () => session?.undo());
+  ref('redo').addEventListener('click', () => session?.redo());
   ref('modeSwitch').addEventListener('click', (e) => {
     const mode = (e.target as HTMLElement).closest<HTMLElement>('[data-mode]')?.dataset.mode;
     if (mode === 'points' || mode === 'freehand') setDrawMode(mode);
   });
-  ref('redo').addEventListener('click', redo);
-  ref('bannerUndo').addEventListener('click', undoPoint);
+  ref('bannerUndo').addEventListener('click', () => session?.undoPoint());
   ref('bannerFinish').addEventListener('click', finishShape);
-  ref('bannerCancel').addEventListener('click', cancelDraft);
+  ref('bannerCancel').addEventListener('click', () => session?.cancelCell());
 
   window.addEventListener(
     'beforeunload',
     (e) => {
       // Only warn while a change hasn't reached storage yet.
-      if (saving || state.revision !== savedRevision) {
-        void saveNow();
+      if (file?.pending) {
+        void file.flush();
         e.preventDefault();
       }
     },
@@ -823,52 +563,54 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   );
 
   // ---------- keyboard ----------
-  window.addEventListener('keydown', (e) => {
-    if (isTyping(e.target)) return;
-    if (e.code === 'Space') {
-      spaceDown = true;
-      updateCursorStyle();
-      e.preventDefault();
-      return;
-    }
-    const key = e.key.toLowerCase();
-    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
-      if (key === 'z' && !e.shiftKey) undo();
-      else if ((key === 'z' && e.shiftKey) || key === 'y') redo();
-      else return;
-      e.preventDefault();
-      return;
-    }
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (key === 'enter' && state.draft) {
-      e.preventDefault(); // don't also activate a focused button
-      finishShape();
-    } else if (key === 'escape') {
-      if (state.draft) cancelDraft();
-      else if (state.selectedVertex) {
-        state.selectedVertex = null;
-        notify();
-      } else selectCell(null);
-    } else if (key === 'backspace' && state.draft) {
-      e.preventDefault();
-      undoPoint();
-    } else if (key === 'delete' || key === 'backspace') {
-      e.preventDefault();
-      deleteSelection();
-    } else if (key === 'n') startAddCell();
-    else if (key === 'd') setDrawMode(state.drawMode === 'points' ? 'freehand' : 'points');
-    else if (key === 'r') {
-      state.showRays = !state.showRays;
-      measurementControls.sync();
-      notify();
-    } else if (key === 'f') fit();
-    else if (key === 'g') {
-      state.display.channel = CHANNELS[(CHANNELS.indexOf(state.display.channel) + 1) % CHANNELS.length];
-      displayControls.sync();
-      displayChanged();
-    } else if (key === 'arrowleft' && !state.draft) void go(-1);
-    else if (key === 'arrowright' && !state.draft) void go(1);
-  }, { signal });
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (isTyping(e.target)) return;
+      if (e.code === 'Space') {
+        spaceDown = true;
+        updateCursorStyle();
+        e.preventDefault();
+        return;
+      }
+      const s = session;
+      const key = e.key.toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        if (key === 'z' && !e.shiftKey) s?.undo();
+        else if ((key === 'z' && e.shiftKey) || key === 'y') s?.redo();
+        else return;
+        e.preventDefault();
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (key === 'enter' && s?.draft) {
+        e.preventDefault(); // don't also activate a focused button
+        finishShape();
+      } else if (key === 'escape') {
+        if (s?.draft) s.cancelCell();
+        else if (!s?.clearPointSelection()) s?.select(null);
+      } else if (key === 'backspace' && s?.draft) {
+        e.preventDefault();
+        s.undoPoint();
+      } else if (key === 'delete' || key === 'backspace') {
+        e.preventDefault();
+        deleteSelection();
+      } else if (key === 'n') s?.startCell();
+      else if (key === 'd') setDrawMode(s?.drawMode === 'freehand' ? 'points' : 'freehand');
+      else if (key === 'r') {
+        view.showRays = !view.showRays;
+        if (s) measurementControls.sync({ showRays: view.showRays, settings: s.measurement });
+        invalidate();
+      } else if (key === 'f') fit();
+      else if (key === 'g') {
+        view.display.channel = CHANNELS[(CHANNELS.indexOf(view.display.channel) + 1) % CHANNELS.length];
+        displayControls.sync();
+        displayChanged();
+      } else if (key === 'arrowleft' && !s?.draft) void go(-1);
+      else if (key === 'arrowright' && !s?.draft) void go(1);
+    },
+    { signal },
+  );
   window.addEventListener(
     'keyup',
     (e) => {
@@ -883,7 +625,6 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   // ---------- chrome (top bar, toolbar, prompt, HUD) ----------
   const crumbFile = ref('crumbFile');
   const emptyHint = ref('emptyHint');
-  const toolbar = ref('toolbar');
   const toolSelect = ref('toolSelect');
   const toolAdd = ref<HTMLButtonElement>('toolAdd');
   const modeSwitch = ref('modeSwitch');
@@ -909,9 +650,10 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   }
 
   function updateBanner(): void {
-    const d = state.draft;
+    const d = session?.draft;
     banner.classList.toggle('hidden', !d);
-    if (!d) return;
+    if (!d || !session) return;
+    const touch = view.pointerType === 'touch';
     const outer = d.phase === 'outer';
     bannerSwatch.style.background = outer ? OUTER_COLOR : INNER_COLOR;
     const freehand = d.mode === 'freehand';
@@ -919,7 +661,7 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     bannerFinish.classList.toggle('hidden', freehand);
     if (freehand) {
       const what = outer ? 'outer ring' : 'dark center';
-      const tip = isTouch()
+      const tip = touch
         ? 'Keep your finger down, go all the way around, then lift it. Pinch with two fingers to zoom or move.'
         : 'Hold the mouse button, go all the way around, then let go. Scroll or Space+drag to move the view.';
       bannerText.innerHTML = `<b>Step ${outer ? 1 : 2} of 2</b> · Trace around the <b>${what}</b><small>${tip}</small>`;
@@ -929,69 +671,86 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     const how =
       remaining > 0
         ? `Place at least ${remaining} more point${remaining === 1 ? '' : 's'}.`
-        : isTouch()
+        : touch
           ? 'To finish, tap the first point or press Finish.'
           : 'To finish, click the first point, double-click, or press Enter.';
-    const verb = isTouch() ? 'Tap' : 'Click';
+    const verb = touch ? 'Tap' : 'Click';
     bannerText.innerHTML = outer
       ? `<b>Step 1 of 2</b> · ${verb} around the <b>outer ring</b><small>${how}</small>`
       : `<b>Step 2 of 2</b> · ${verb} around the <b>dark center</b><small>${how}</small>`;
     bannerUndo.disabled = d.points.length === 0;
-    bannerFinish.disabled = !canClose(d);
+    bannerFinish.disabled = !session.canFinishShape;
   }
 
   function updateChrome(): void {
-    const img = state.image;
+    const img = view.image;
+    const s = session;
     crumbFile.textContent = img ? img.filename : 'Loading…';
     crumbFile.title = img ? `${img.filename} (${img.width} × ${img.height} px)` : '';
     emptyHint.classList.toggle('hidden', !!img);
     toolbar.classList.toggle('hidden', !img);
-    toolSelect.classList.toggle('active', !state.draft);
-    toolAdd.classList.toggle('active', !!state.draft);
+    toolSelect.classList.toggle('active', !s?.draft);
+    toolAdd.classList.toggle('active', !!s?.draft);
     for (const b of modeSwitch.querySelectorAll<HTMLElement>('[data-mode]')) {
-      b.classList.toggle('active', b.dataset.mode === state.drawMode);
+      b.classList.toggle('active', b.dataset.mode === (s?.drawMode ?? 'points'));
     }
-    zoomLabel.textContent = `${Math.round(state.viewport.scale * 100)}%`;
-    undoBtn.disabled = !history.canUndo && !(state.draft && state.draft.points.length > 0);
-    redoBtn.disabled = !history.canRedo;
-    cellCount.textContent = String(state.cells.length);
-    doneBtn.classList.toggle('active', state.status === 'done');
-    doneBtn.disabled = !img;
-    doneBtn.innerHTML = `${icon('check')} <span class="label">${state.status === 'done' ? 'Done' : 'Mark as done'}</span>`;
-    sheetTitle.textContent = `Cells · ${state.cells.length}`;
-    const sel = state.cells.find((x) => x.id === state.selectedId);
+    zoomLabel.textContent = `${Math.round(view.viewport.scale * 100)}%`;
+    undoBtn.disabled = !s?.canUndo;
+    redoBtn.disabled = !s?.canRedo;
+    cellCount.textContent = String(s?.cells.length ?? 0);
+    const status = s?.status ?? 'not_started';
+    doneBtn.classList.toggle('active', status === 'done');
+    doneBtn.disabled = !s;
+    doneBtn.innerHTML = `${icon('check')} <span class="label">${status === 'done' ? 'Done' : 'Mark as done'}</span>`;
+    sheetTitle.textContent = `Cells · ${s?.cells.length ?? 0}`;
+    const sel = s?.selectedCell;
     sheetSummary.textContent = sel
       ? `Cell ${sel.id}: ${sel.measurements.gap_median === null ? '—' : `${sel.measurements.gap_median.toFixed(1)} px`}`
       : '';
     updateSavePill();
     updateBanner();
-    cellPanel.update(state);
+    cellPanel.update({
+      hasImage: !!img,
+      drawing: !!s?.draft,
+      cells: s?.cells ?? [],
+      selectedId: s?.selectedId ?? null,
+      revision: s?.revision ?? -1,
+      showBand: view.showBand,
+    });
 
-    const c = state.cursor;
+    const c = view.cursor;
     const inImage = c && img && c[0] >= 0 && c[1] >= 0 && c[0] < img.width && c[1] < img.height;
     hud.textContent = img
       ? `${img.width} × ${img.height} px${inImage ? `   ·   x ${Math.floor(c[0])}, y ${Math.floor(c[1])}` : ''}`
       : '';
   }
 
-  let lastRevision = state.revision;
-  const unsubscribe = subscribe(() => {
-    if (state.revision !== lastRevision) {
-      lastRevision = state.revision;
-      if (state.status === 'not_started' && state.cells.length > 0) state.status = 'in_progress';
-      scheduleSave();
-    }
-    updateChrome();
-    requestRedraw();
-  });
-  updateChrome();
-  void loadImage();
+  // Dev-only handle for poking at the screen from the console and browser tests.
+  if (import.meta.env.DEV) {
+    (window as unknown as { __state: object }).__state = {
+      get image() { return view.image; },
+      get viewport() { return view.viewport; },
+      set viewport(v: Viewport) { setViewport(v); invalidate(); },
+      get cells() { return session?.cells ?? []; },
+      get draft() { return session?.draft ?? null; },
+      get selectedId() { return session?.selectedId ?? null; },
+      get selectedVertex() { return session?.selectedVertex ?? null; },
+      get measurement() { return session?.measurement; },
+      get status() { return session?.status; },
+      get drawMode() { return session?.drawMode; },
+      get revision() { return session?.revision; },
+      get showRays() { return view.showRays; },
+    };
+  }
+
+  invalidate();
+  void load();
 
   return () => {
-    void saveNow(); // flush anything pending; it finishes in the background
+    void file?.close(); // flushes anything pending; finishes in the background
     abort.abort();
     resizeObserver.disconnect();
-    unsubscribe();
+    for (const off of cleanups) off();
   };
 }
 

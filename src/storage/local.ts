@@ -1,8 +1,9 @@
-// Store backed by IndexedDB in this browser. There is one implicit local user;
-// nothing leaves the device, so "sharing" doesn't apply.
+// Browser-only backend: images and annotations in IndexedDB, the annotator's
+// name in localStorage. One implicit local user; nothing leaves the device, so
+// there is no sign-in and no sharing.
 
 import type { AnnotationDoc } from '../io/schema';
-import type { ImageRecord, ImageSummary, LibraryScope, PreparedImage, Store, User } from './store';
+import type { Account, ImageRecord, ImageSummary, LibraryScope, LibraryStore, PreparedImage, User } from './store';
 import { compareImages } from './store';
 
 const DB_NAME = 'bacteria-annotation';
@@ -42,8 +43,28 @@ export function openDb(name = DB_NAME): Promise<IDBDatabase> {
   });
 }
 
-export class LocalStore implements Store {
-  readonly kind = 'local';
+/** The single person using this browser; their name is all there is to an account. */
+export class LocalAccount implements Account {
+  private readonly listeners = new Set<() => void>();
+
+  currentUser(): User {
+    return { id: 'local', email: null, displayName: localStorage.getItem(NAME_KEY) };
+  }
+
+  async setDisplayName(name: string): Promise<void> {
+    localStorage.setItem(NAME_KEY, name);
+    for (const fn of this.listeners) fn();
+  }
+
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+}
+
+export class LocalStore implements LibraryStore {
+  readonly location = 'browser';
+  readonly canShare = false;
   private thumbUrls = new Map<string, string>();
   private askedPersist = false;
 
@@ -51,29 +72,6 @@ export class LocalStore implements Store {
 
   static async open(name?: string): Promise<LocalStore> {
     return new LocalStore(await openDb(name));
-  }
-
-  currentUser(): User {
-    return { id: 'local', email: null, displayName: localStorage.getItem(NAME_KEY) };
-  }
-  // There is nobody to sign in as in the browser-only version.
-  readonly passwordRecovery = false;
-  async signInWithPassword(): Promise<void> {}
-  async signUp(): Promise<'signed_in'> {
-    return 'signed_in';
-  }
-  async signInWithGoogle(): Promise<void> {}
-  async sendPasswordReset(): Promise<void> {}
-  async setPassword(): Promise<void> {}
-  async authProviders(): Promise<{ google: boolean }> {
-    return { google: false };
-  }
-  async signOut(): Promise<void> {}
-  async setDisplayName(name: string): Promise<void> {
-    localStorage.setItem(NAME_KEY, name);
-  }
-  onAuthChange(): () => void {
-    return () => {};
   }
 
   async listImages(scope: LibraryScope): Promise<ImageSummary[]> {
@@ -147,7 +145,7 @@ export class LocalStore implements Store {
   }
 
   async setShared(): Promise<void> {
-    throw new Error('Sharing needs the online version (Supabase).');
+    throw new Error('Sharing needs the online version (Supabase).'); // canShare is false
   }
 
   async getAnnotation(imageId: string): Promise<AnnotationDoc | null> {

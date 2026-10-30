@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { toDoc } from '../src/io/annotation';
 import { DEFAULT_MEASUREMENT_SETTINGS } from '../src/measure/measure';
-import { LocalStore } from '../src/storage/local';
+import { LocalAccount, LocalStore } from '../src/storage/local';
 import type { PreparedImage } from '../src/storage/store';
 
 // Node has no localStorage; the local store keeps the annotator name there.
@@ -70,8 +70,12 @@ describe('LocalStore', () => {
     await expect(store.getImage(rec.id)).rejects.toThrow();
   });
 
-  it('remembers the annotator name', async () => {
-    await store.setDisplayName('Dr. Smith');
-    expect(store.currentUser().displayName).toBe('Dr. Smith');
+  it('the local account remembers the annotator name and announces changes', async () => {
+    const account = new LocalAccount();
+    let heard = 0;
+    account.onChange(() => heard++);
+    await account.setDisplayName('Dr. Smith');
+    expect(account.currentUser().displayName).toBe('Dr. Smith');
+    expect(heard).toBe(1);
   });
 });

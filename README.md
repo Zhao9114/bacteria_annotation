@@ -161,21 +161,24 @@ Alternatively, `npx vercel` from this folder deploys from the command line. Rout
 
 ### Code map
 
-- **Screens**
+Domain terms are defined in [GLOSSARY.md](GLOSSARY.md).
+
+- **Screens** (DOM only; the logic lives in the modules below)
+  - [main.ts](src/main.ts): hash router.
   - `src/screens/`: `library.ts`, `annotate.ts`, `signin.ts`.
-  - [src/main.ts](src/main.ts): hash router.
+- **Annotating**
+  - [annotation/session.ts](src/annotation/session.ts): the annotation session. Cells, the cell being drawn, selection, undo/redo, status and settings behind one interface; every cell re-measured on change. Tested in `tests/session.test.ts`.
+  - Its internals: [draw.ts](src/tools/draw.ts) (point-by-point), [freehand.ts](src/tools/freehand.ts) (stroke → simplified outline), [edit.ts](src/tools/edit.ts) (point hit-testing and edits), [history.ts](src/history.ts) (undo snapshots).
+- **Input**
+  - [input/gestures.ts](src/input/gestures.ts): turns mouse, pen and touch events into taps, double-taps, drags, pans, pinches and hover. Pure; tested with timed event sequences in `tests/gestures.test.ts`.
 - **Canvas**
-  - [viewport.ts](src/canvas/viewport.ts): image ↔ screen transform.
+  - [viewport.ts](src/canvas/viewport.ts): image ↔ screen transform, zoom, pan, pinch.
   - [filters.ts](src/canvas/filters.ts): display filters.
-  - [render.ts](src/canvas/render.ts): drawing.
-- **Tools**
-  - [draw.ts](src/tools/draw.ts): point-by-point drawing.
-  - [freehand.ts](src/tools/freehand.ts): stroke → smoothed and simplified polygon.
-  - [edit.ts](src/tools/edit.ts): vertex hit-testing and edits.
-  - [history.ts](src/history.ts): undo/redo.
+  - [render.ts](src/canvas/render.ts): draws a `Scene` (image, cells, selection, cell being drawn).
 - **Measurements**
   - [geometry.ts](src/measure/geometry.ts): polygon geometry.
-  - [measure.ts](src/measure/measure.ts): ray-based gap with the pipeline's MAD outlier rule. `tests/measure.test.ts` includes numpy parity fixtures.
-- **Data**
-  - [schema.ts](src/io/schema.ts): annotation format (`schema_version: 1`; all coordinates in original image pixels).
-  - [annotation.ts](src/io/annotation.ts): document ↔ editor state. Measurements are recomputed on load.
+  - [measure.ts](src/measure/measure.ts): gap along measurement lines with the pipeline's MAD rule. `tests/measure.test.ts` includes numpy parity fixtures.
+- **Data and storage**
+  - [schema.ts](src/io/schema.ts): annotation format (`schema_version: 1`; all coordinates in original image pixels); [annotation.ts](src/io/annotation.ts): document ↔ content.
+  - [storage/store.ts](src/storage/store.ts): the three interfaces a backend provides. `LibraryStore` (images, annotations) and `Account` (the annotator's name) have two adapters each, [local.ts](src/storage/local.ts) (IndexedDB) and [supabase.ts](src/storage/supabase.ts). `Auth` (sign-in) exists only online.
+  - [storage/annotation-file.ts](src/storage/annotation-file.ts): opens an image's annotation and autosaves it (debounce, retry, timestamps). Tested with an in-memory adapter in `tests/annotation-file.test.ts`.
