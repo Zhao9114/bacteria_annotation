@@ -3,7 +3,7 @@
 
 import { DEFAULT_DISPLAY, type DisplaySettings } from './canvas/filters';
 import type { Viewport } from './canvas/viewport';
-import type { Cell } from './io/schema';
+import type { Cell, DrawMode } from './io/schema';
 import { DEFAULT_MEASUREMENT_SETTINGS, type MeasurementSettings } from './measure/measure';
 import type { Draft } from './tools/draw';
 import type { EdgeHit, VertexRef } from './tools/edit';
@@ -30,6 +30,8 @@ export interface AppState {
   revision: number;
   /** Cell being added, or null when not drawing. */
   draft: Draft | null;
+  /** How new cells are drawn: clicked point by point, or traced freehand. */
+  drawMode: DrawMode;
   selectedId: number | null;
   /** Selected point on the selected cell (Delete removes it). */
   selectedVertex: VertexRef | null;
@@ -52,6 +54,7 @@ export function createState(): AppState {
     nextCellId: 1,
     revision: 0,
     draft: null,
+    drawMode: localStorage.getItem('drawMode') === 'freehand' ? 'freehand' : 'points',
     selectedId: null,
     selectedVertex: null,
     hover: null,

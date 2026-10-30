@@ -149,6 +149,12 @@ function drawDraft(ctx: CanvasRenderingContext2D, state: AppState): void {
   }
 
   const color = d.phase === 'outer' ? OUTER_COLOR : INNER_COLOR;
+  if (d.stroke && d.stroke.length > 1) {
+    tracePathNew(ctx, d.stroke.map((p) => imageToScreen(v, p)), false);
+    strokeOutlined(ctx, color, 2);
+    return;
+  }
+  if (d.mode === 'freehand') return;
   const pts = d.points.map((p) => imageToScreen(v, p));
   if (pts.length > 1) {
     tracePathNew(ctx, pts, false);

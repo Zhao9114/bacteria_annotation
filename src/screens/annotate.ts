@@ -4,7 +4,7 @@ import { applyDisplayFilters, CHANNELS } from '../canvas/filters';
 import { CLOSE_RADIUS_PX, INNER_COLOR, OUTER_COLOR, render } from '../canvas/render';
 import { fitToWindow, pan, screenToImage, zoomAt, type Point } from '../canvas/viewport';
 import { History, type Snapshot } from '../history';
-import type { Cell } from '../io/schema';
+import type { Cell, DrawMode } from '../io/schema';
 import { pointInPolygon } from '../measure/geometry';
 import { measureCell } from '../measure/measure';
 import { createState, notify, subscribe, type AppState, type LoadedImage } from '../state';
@@ -17,6 +17,7 @@ import {
   removeLastPoint,
   startDraft,
 } from '../tools/draw';
+import { closeStroke, shouldSample } from '../tools/freehand';
 import { deleteVertex, hitEdge, hitVertex, insertVertex, moveVertex, type Ring } from '../tools/edit';
 import { icon } from '../ui/icons';
 import { mountCellPanel, mountDisplayControls, mountMeasurementControls } from '../ui/sidebar';
@@ -30,6 +31,9 @@ const DUPLICATE_PX = 3;
 /** Grab radius (screen px) for points and edges of the selected cell. */
 const HANDLE_PX = 8;
 const ZOOM_STEP = 1.25;
+/** Freehand: spacing of stroke samples and simplification tolerance, in screen px. */
+const STROKE_SAMPLE_PX = 1.5;
+const STROKE_SIMPLIFY_PX = 2;
 
 const TEMPLATE = /* html */ `
 <div class="app">
@@ -54,6 +58,10 @@ const TEMPLATE = /* html */ `
       <div class="toolbar glass hidden" data-ref="toolbar">
         <button class="ghost icon-btn" data-ref="toolSelect" title="Select cells and move the image (Esc)">${icon('pointer')}</button>
         <button class="ghost" data-ref="toolAdd" title="Add a cell (N)">${icon('plus')} Add cell</button>
+        <div class="segmented" data-ref="modeSwitch" title="How to draw outlines (D to switch)">
+          <button data-mode="points" title="Click points around each outline. Most precise.">${icon('points')} Points</button>
+          <button data-mode="freehand" title="Hold the mouse button and trace around each outline. Quicker, less precise.">${icon('pencil')} Freehand</button>
+        </div>
         <span class="sep"></span>
         <button class="ghost icon-btn" data-ref="undo" title="Undo (Ctrl+Z)">${icon('undo')}</button>
         <button class="ghost icon-btn" data-ref="redo" title="Redo (Ctrl+Shift+Z)">${icon('redo')}</button>
@@ -312,6 +320,11 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     canvas.setPointerCapture(e.pointerId);
     const [x, y] = screenPoint(e);
     if (e.button === 0 && !spaceDown && startVertexDrag([x, y])) return;
+    if (e.button === 0 && !spaceDown && state.draft?.mode === 'freehand') {
+      state.draft = { ...state.draft, stroke: [screenToImage(state.viewport, [x, y])] };
+      notify();
+      return;
+    }
     drag = { id: e.pointerId, startX: x, startY: y, lastX: x, lastY: y, panning: e.button === 1 || spaceDown };
     updateCursorStyle();
   });
@@ -344,7 +357,11 @@ export function mountAnnotateScreen(root: HTMLElement): void {
 
   canvas.addEventListener('pointermove', (e) => {
     const p = screenPoint(e);
-    if (vertexDrag) {
+    if (state.draft?.stroke) {
+      const ip = screenToImage(state.viewport, p);
+      const stroke = state.draft.stroke;
+      if (shouldSample(stroke, ip, STROKE_SAMPLE_PX / state.viewport.scale)) stroke.push(ip);
+    } else if (vertexDrag) {
       const img = state.image!;
       const ip = clampToImage(screenToImage(state.viewport, p), img.width, img.height);
       if (!vertexDrag.moved) {
@@ -382,6 +399,11 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   }
 
   const endDrag = (e: PointerEvent) => {
+    if (state.draft?.stroke) {
+      finishStroke();
+      suppressClick = true;
+      return;
+    }
     if (vertexDrag) {
       vertexDrag = null;
       suppressClick = true;
@@ -412,6 +434,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   function handleClick(screen: Point, clickCount: number): void {
     const img = state.image!;
     const d = state.draft;
+    if (d?.mode === 'freehand') return; // strokes are handled by pointerdown/up
     if (d) {
       // The first click of a double-click already placed a point; the second closes.
       if (clickCount >= 2) {
@@ -444,7 +467,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   // ---------- add-cell tool ----------
   function startAddCell(): void {
     if (!state.image || state.draft) return;
-    state.draft = startDraft();
+    state.draft = startDraft(state.drawMode);
     state.selectedId = null;
     updateCursorStyle();
     notify();
@@ -469,7 +492,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
         inner: result.inner,
         flags: [],
         note: '',
-        draw_mode: 'points',
+        draw_mode: d.mode,
         measurements: measureCell(result.outer, result.inner, state.measurement),
       });
       state.revision++;
@@ -477,6 +500,25 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       state.selectedId = id;
       updateCursorStyle();
     }
+    notify();
+  }
+
+  /** Freehand: the mouse was released, so close the traced outline. */
+  function finishStroke(): void {
+    const d = state.draft!;
+    const img = state.image!;
+    const poly = closeStroke(d.stroke!, STROKE_SIMPLIFY_PX / state.viewport.scale, img.width, img.height);
+    state.draft = { ...d, stroke: null, points: poly ?? [] };
+    if (poly) finishShape();
+    else flashBanner();
+    notify();
+  }
+
+  function setDrawMode(mode: DrawMode): void {
+    state.drawMode = mode;
+    localStorage.setItem('drawMode', mode);
+    // Switching mid-cell restarts only the outline being drawn now.
+    if (state.draft) state.draft = { ...state.draft, mode, points: [], stroke: null };
     notify();
   }
 
@@ -566,6 +608,10 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   ref('toolSelect').addEventListener('click', () => cancelDraft());
   ref('toolAdd').addEventListener('click', startAddCell);
   ref('undo').addEventListener('click', undo);
+  ref('modeSwitch').addEventListener('click', (e) => {
+    const mode = (e.target as HTMLElement).closest<HTMLElement>('[data-mode]')?.dataset.mode;
+    if (mode === 'points' || mode === 'freehand') setDrawMode(mode);
+  });
   ref('redo').addEventListener('click', redo);
   ref('bannerUndo').addEventListener('click', undoPoint);
   ref('bannerFinish').addEventListener('click', finishShape);
@@ -610,6 +656,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       e.preventDefault();
       deleteSelection();
     } else if (key === 'n') startAddCell();
+    else if (key === 'd') setDrawMode(state.drawMode === 'points' ? 'freehand' : 'points');
     else if (key === 'r') {
       state.showRays = !state.showRays;
       measurementControls.sync();
@@ -634,6 +681,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   const toolbar = ref('toolbar');
   const toolSelect = ref('toolSelect');
   const toolAdd = ref<HTMLButtonElement>('toolAdd');
+  const modeSwitch = ref('modeSwitch');
   const zoomLabel = ref('zoomLabel');
   const undoBtn = ref<HTMLButtonElement>('undo');
   const redoBtn = ref<HTMLButtonElement>('redo');
@@ -658,6 +706,14 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     if (!d) return;
     const outer = d.phase === 'outer';
     bannerSwatch.style.background = outer ? OUTER_COLOR : INNER_COLOR;
+    const freehand = d.mode === 'freehand';
+    bannerUndo.classList.toggle('hidden', freehand);
+    bannerFinish.classList.toggle('hidden', freehand);
+    if (freehand) {
+      const what = outer ? 'outer ring' : 'dark center';
+      bannerText.innerHTML = `<b>Step ${outer ? 1 : 2} of 2</b> · Trace around the <b>${what}</b><small>Hold the mouse button, go all the way around, then let go. Scroll or Space+drag to move the view.</small>`;
+      return;
+    }
     const remaining = Math.max(0, 3 - d.points.length);
     const how =
       remaining > 0
@@ -678,6 +734,9 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     toolbar.classList.toggle('hidden', !img);
     toolSelect.classList.toggle('active', !state.draft);
     toolAdd.classList.toggle('active', !!state.draft);
+    for (const b of modeSwitch.querySelectorAll<HTMLElement>('[data-mode]')) {
+      b.classList.toggle('active', b.dataset.mode === state.drawMode);
+    }
     zoomLabel.textContent = `${Math.round(state.viewport.scale * 100)}%`;
     undoBtn.disabled = !history.canUndo && !(state.draft && state.draft.points.length > 0);
     redoBtn.disabled = !history.canRedo;

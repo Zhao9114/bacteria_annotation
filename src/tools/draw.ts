@@ -2,26 +2,29 @@
 // then clicks around the dark center and closes that. Pure functions over a
 // small draft object; the screen handles input and rendering.
 
-import type { Point, Polygon } from '../io/schema';
+import type { DrawMode, Point, Polygon } from '../io/schema';
 
 export const MIN_POLYGON_POINTS = 3;
 
 export type DrawPhase = 'outer' | 'inner';
 
 export interface Draft {
+  mode: DrawMode;
   phase: DrawPhase;
   /** Finished outer polygon, set once the first phase closes. */
   outer: Polygon | null;
   /** Points of the polygon currently being drawn. */
   points: Point[];
+  /** Freehand only: raw samples of the stroke in progress (mouse held down). */
+  stroke: Point[] | null;
 }
 
 export type CloseResult =
   | { kind: 'next'; draft: Draft }
   | { kind: 'done'; outer: Polygon; inner: Polygon };
 
-export function startDraft(): Draft {
-  return { phase: 'outer', outer: null, points: [] };
+export function startDraft(mode: DrawMode = 'points'): Draft {
+  return { mode, phase: 'outer', outer: null, points: [], stroke: null };
 }
 
 export function addPoint(d: Draft, p: Point): Draft {
@@ -40,7 +43,7 @@ export function canClose(d: Draft): boolean {
 export function closePolygon(d: Draft): CloseResult | null {
   if (!canClose(d)) return null;
   if (d.phase === 'outer') {
-    return { kind: 'next', draft: { phase: 'inner', outer: d.points, points: [] } };
+    return { kind: 'next', draft: { ...d, phase: 'inner', outer: d.points, points: [], stroke: null } };
   }
   return { kind: 'done', outer: d.outer!, inner: d.points };
 }

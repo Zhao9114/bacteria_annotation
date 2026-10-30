@@ -29,7 +29,7 @@ describe('draw tool', () => {
     const first = closePolygon(withPoints(startDraft(), outer));
     expect(first?.kind).toBe('next');
     if (first?.kind !== 'next') return;
-    expect(first.draft).toEqual({ phase: 'inner', outer, points: [] });
+    expect(first.draft).toEqual({ mode: 'points', phase: 'inner', outer, points: [], stroke: null });
 
     const second = closePolygon(withPoints(first.draft, inner));
     expect(second).toEqual({ kind: 'done', outer, inner });
