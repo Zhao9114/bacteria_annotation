@@ -18,9 +18,9 @@ const STATUS_CLASS: Record<ImageStatus, string> = { not_started: '', in_progress
 const TEMPLATE = /* html */ `
 <div class="app">
   <header class="topbar">
-    <a class="brand" href="#/library"><span class="logo">${icon('logo')}</span>Cell Annotator</a>
+    <a class="brand" href="#/library"><span class="logo">${icon('logo')}</span><span class="brand-text">Cell Annotator</span></a>
     <span class="spacer"></span>
-    <span class="pill plain" data-ref="where"></span>
+    <span class="pill plain where-pill" data-ref="where"></span>
     <div class="group" data-ref="user"></div>
   </header>
   <main class="library" data-ref="main">
@@ -73,8 +73,8 @@ export function mountLibraryScreen(root: HTMLElement, store: Store): () => void 
 
   ref('where').innerHTML =
     store.kind === 'local'
-      ? `${icon('hardDrive')} Saved in this browser only`
-      : `${icon('cloud')} Saved online`;
+      ? `${icon('hardDrive')} <span class="label">Saved in this browser only</span>`
+      : `${icon('cloud')} <span class="label">Saved online</span>`;
   ref('where').title =
     store.kind === 'local'
       ? 'Images and annotations are stored in this browser on this computer. Clearing browser data deletes them.'

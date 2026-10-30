@@ -15,8 +15,10 @@ const SELECTED_GLOW = 'rgba(255, 255, 255, 0.95)';
 export const RAY_KEPT_COLOR = '#00e5ff';
 export const RAY_REJECTED_COLOR = '#ff5a36';
 
-/** Screen distance (px) within which a click on the first point closes the shape. */
-export const CLOSE_RADIUS_PX = 10;
+/** Screen distance (px) within which a click on the first point closes the shape; larger for fingers. */
+export function closeRadiusPx(pointerType: string): number {
+  return pointerType === 'touch' ? 22 : 10;
+}
 
 export function render(ctx: CanvasRenderingContext2D, state: AppState, cssW: number, cssH: number): void {
   ctx.clearRect(0, 0, cssW, cssH); // the stage's CSS background shows through
@@ -164,7 +166,10 @@ function drawDraft(ctx: CanvasRenderingContext2D, state: AppState): void {
   const cursor = state.cursor ? imageToScreen(v, state.cursor) : null;
   const first = pts[0];
   const nearFirst =
-    !!cursor && !!first && pts.length >= 3 && Math.hypot(cursor[0] - first[0], cursor[1] - first[1]) <= CLOSE_RADIUS_PX;
+    !!cursor &&
+    !!first &&
+    pts.length >= 3 &&
+    Math.hypot(cursor[0] - first[0], cursor[1] - first[1]) <= closeRadiusPx(state.pointerType);
 
   // Rubber band from the last point to the cursor (or to the first point when about to close).
   if (cursor && pts.length > 0) {
@@ -181,7 +186,7 @@ function drawDraft(ctx: CanvasRenderingContext2D, state: AppState): void {
   pts.forEach((p, i) => drawVertex(ctx, p, color, i === 0 ? 6 : 3.5));
   if (nearFirst) {
     ctx.beginPath();
-    ctx.arc(first[0], first[1], CLOSE_RADIUS_PX + 2, 0, Math.PI * 2);
+    ctx.arc(first[0], first[1], closeRadiusPx(state.pointerType) + 2, 0, Math.PI * 2);
     strokeOutlined(ctx, '#ffffff', 2);
   }
 }

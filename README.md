@@ -45,6 +45,15 @@ The measurements appear on the right as soon as the cell is finished. The main n
 - Drag the image to move it. In Freehand mode, use `Space`+drag or the scroll wheel instead.
 - `F` fits the whole image on screen.
 
+### On a phone or tablet
+
+The app works with touch. On a phone the tools sit along the bottom edge, and the cell list and settings slide up from the bottom: tap the **Cells** bar to open or close it.
+
+- **Points:** tap around the outline. To finish, tap the first point again or press the ✓ button.
+- **Freehand:** keep your finger down, trace all the way around, then lift it.
+- **Zoom and move:** pinch with two fingers. Two fingers never add points, so you can zoom in the middle of drawing.
+- **Fix a cell:** tap it to select it, then drag its points with your finger.
+
 ### Saving and finishing
 
 - Your work saves automatically. The label at the top says **Saved** when everything is stored.

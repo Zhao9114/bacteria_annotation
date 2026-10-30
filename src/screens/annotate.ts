@@ -1,8 +1,8 @@
 // Annotation screen: canvas with zoom/pan, floating toolbar, inspector.
 
 import { applyDisplayFilters, CHANNELS } from '../canvas/filters';
-import { CLOSE_RADIUS_PX, INNER_COLOR, OUTER_COLOR, render } from '../canvas/render';
-import { fitToWindow, pan, screenToImage, zoomAt, type Point } from '../canvas/viewport';
+import { closeRadiusPx, INNER_COLOR, OUTER_COLOR, render } from '../canvas/render';
+import { fitToWindow, pan, pinchViewport, screenToImage, zoomAt, type Point, type Viewport } from '../canvas/viewport';
 import { History, type Snapshot } from '../history';
 import { fromDoc, toDoc } from '../io/annotation';
 import type { Cell, DrawMode } from '../io/schema';
@@ -27,14 +27,14 @@ import { toast } from '../ui/toast';
 import { annotatorName, mountUserMenu } from '../ui/user';
 
 /** A left-button press that moves less than this (screen px) is a click, not a pan. */
-const CLICK_SLOP = 4;
+const CLICK_SLOP = { mouse: 4, touch: 8 };
 /** A click this close (screen px) to the previous point is ignored rather than added twice. */
 const DUPLICATE_PX = 3;
 /** Grab radius (screen px) for points and edges of the selected cell. */
-const HANDLE_PX = 8;
+const HANDLE_PX = { mouse: 8, touch: 18 };
 const ZOOM_STEP = 1.25;
-/** Height (screen px) kept free above the image when fitting, for the floating toolbar. */
-const TOOLBAR_SPACE = 48;
+/** A click arriving this soon (ms) after a drag, stroke or pinch belongs to it and is ignored. */
+const CLICK_AFTER_GESTURE_MS = 350;
 /** Autosave this long after the last change. */
 const SAVE_DELAY_MS = 800;
 const SAVE_RETRY_MS = 5000;
@@ -46,7 +46,8 @@ const STROKE_SIMPLIFY_PX = 2;
 const TEMPLATE = /* html */ `
 <div class="app">
   <header class="topbar">
-    <a class="brand" href="#/library"><span class="logo">${icon('logo')}</span>Cell Annotator</a>
+    <a class="brand" href="#/library"><span class="logo">${icon('logo')}</span><span class="brand-text">Cell Annotator</span></a>
+    <a class="back-link" href="#/library" title="Back to the library">${icon('chevronLeft')}</a>
     <nav class="crumbs">
       <span>/</span><a href="#/library">Library</a><span>/</span><span class="current" data-ref="crumbFile">Loading…</span>
     </nav>
@@ -54,10 +55,10 @@ const TEMPLATE = /* html */ `
     <span class="pill" data-ref="savePill"></span>
     <div class="group">
       <button class="ghost icon-btn" data-ref="prev" title="Previous image (←)">${icon('chevronLeft')}</button>
-      <span class="muted num" data-ref="position"></span>
+      <span class="muted num position" data-ref="position"></span>
       <button class="ghost icon-btn" data-ref="next" title="Next image (→)">${icon('chevronRight')}</button>
     </div>
-    <button data-ref="done" title="Mark this image as finished. You can still change it later.">${icon('check')} Mark as done</button>
+    <button class="done-btn" data-ref="done" title="Mark this image as finished. You can still change it later.">${icon('check')} <span class="label">Mark as done</span></button>
     <div class="group" data-ref="user"></div>
   </header>
   <main class="workspace">
@@ -73,30 +74,35 @@ const TEMPLATE = /* html */ `
       </div>
       <div class="toolbar glass hidden" data-ref="toolbar">
         <button class="ghost icon-btn" data-ref="toolSelect" title="Select cells and move the image (Esc)">${icon('pointer')}</button>
-        <button class="ghost" data-ref="toolAdd" title="Add a cell (N)">${icon('plus')} Add cell</button>
+        <button class="ghost" data-ref="toolAdd" title="Add a cell (N)">${icon('plus')} <span class="label">Add cell</span></button>
         <div class="segmented" data-ref="modeSwitch" title="How to draw outlines (D to switch)">
-          <button data-mode="points" title="Click points around each outline. Most precise.">${icon('points')} Points</button>
-          <button data-mode="freehand" title="Hold the mouse button and trace around each outline. Quicker, less precise.">${icon('pencil')} Freehand</button>
+          <button data-mode="points" title="Click points around each outline. Most precise.">${icon('points')} <span class="label">Points</span></button>
+          <button data-mode="freehand" title="Hold the mouse button (or your finger) and trace around each outline. Quicker, less precise.">${icon('pencil')} <span class="label">Freehand</span></button>
         </div>
         <span class="sep"></span>
         <button class="ghost icon-btn" data-ref="undo" title="Undo (Ctrl+Z)">${icon('undo')}</button>
         <button class="ghost icon-btn" data-ref="redo" title="Redo (Ctrl+Shift+Z)">${icon('redo')}</button>
-        <span class="sep"></span>
-        <button class="ghost icon-btn" data-ref="zoomOut" title="Zoom out (or scroll)">${icon('zoomOut')}</button>
-        <span class="zoom" data-ref="zoomLabel"></span>
-        <button class="ghost icon-btn" data-ref="zoomIn" title="Zoom in (or scroll)">${icon('zoomIn')}</button>
+        <span class="sep zoom-group"></span>
+        <button class="ghost icon-btn zoom-group" data-ref="zoomOut" title="Zoom out (or scroll)">${icon('zoomOut')}</button>
+        <span class="zoom zoom-group" data-ref="zoomLabel"></span>
+        <button class="ghost icon-btn zoom-group" data-ref="zoomIn" title="Zoom in (or scroll)">${icon('zoomIn')}</button>
         <button class="ghost icon-btn" data-ref="fit" title="Fit the whole image (F)">${icon('fit')}</button>
       </div>
       <div class="prompt glass hidden" data-ref="banner">
         <span class="swatch" data-ref="bannerSwatch"></span>
         <span class="text" data-ref="bannerText"></span>
-        <button class="ghost" data-ref="bannerUndo" title="Remove the last point you clicked (Backspace)">${icon('undo')} Point</button>
-        <button data-ref="bannerFinish" title="Close this shape (Enter)">${icon('check')} Finish</button>
+        <button class="ghost" data-ref="bannerUndo" title="Remove the last point you clicked (Backspace)">${icon('undo')} <span class="label">Point</span></button>
+        <button data-ref="bannerFinish" title="Close this shape (Enter)">${icon('check')} <span class="label">Finish</span></button>
         <button class="ghost icon-btn" data-ref="bannerCancel" title="Stop adding this cell (Esc)">${icon('x')}</button>
       </div>
       <div class="hud glass" data-ref="hud"></div>
     </div>
-    <aside class="inspector">
+    <aside class="inspector" data-ref="inspector">
+      <button class="sheet-header" data-ref="sheetHeader" title="Show or hide the cell list and settings">
+        <span class="grip"></span>
+        <span class="sheet-title" data-ref="sheetTitle">Cells</span>
+        <span class="sheet-summary" data-ref="sheetSummary"></span>
+      </button>
       <details class="panel" open>
         <summary>Cells <span class="count" data-ref="cellCount">0</span></summary>
         <div class="body" data-ref="cellsSection"></div>
@@ -189,22 +195,51 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     cssH = wrap.clientHeight;
     canvas.width = Math.round(cssW * dpr);
     canvas.height = Math.round(cssH * dpr);
+    // Rotating a phone or resizing the window keeps a fitted image fitted.
+    if (fitted) fit();
     requestRedraw();
   });
   resizeObserver.observe(wrap);
 
+  /** True while the view is exactly "fit to window"; any zoom or pan clears it. */
+  let fitted = false;
+
+  function setViewport(v: Viewport): void {
+    state.viewport = v;
+    fitted = false;
+  }
+
+  /**
+   * Space taken over the canvas by floating UI: the toolbar at the top on
+   * desktop; on phones the bottom dock and the collapsed bottom sheet.
+   */
+  function fitInsets(): { top: number; bottom: number } {
+    const w = wrap.getBoundingClientRect();
+    let top = 0;
+    let bottom = 0;
+    for (const el of [toolbar, ref('sheetHeader')]) {
+      const r = el.getBoundingClientRect();
+      if (r.height === 0 || r.right <= w.left || r.left >= w.right || r.bottom <= w.top || r.top >= w.bottom) continue;
+      if (r.top - w.top < w.height / 2) top = Math.max(top, r.bottom - w.top);
+      else bottom = Math.max(bottom, w.bottom - r.top);
+    }
+    return { top, bottom };
+  }
+
   function fit(): void {
     if (!state.image) return;
-    // Read the live size: the ResizeObserver may not have reported yet. Keep the
-    // top strip clear so the floating toolbar doesn't cover the image.
-    const v = fitToWindow(state.image.width, state.image.height, wrap.clientWidth, wrap.clientHeight - TOOLBAR_SPACE);
-    state.viewport = { ...v, ty: v.ty + TOOLBAR_SPACE };
+    // Read live sizes: the ResizeObserver may not have reported yet.
+    const { top, bottom } = fitInsets();
+    const pad = wrap.clientWidth < 600 ? 10 : 20;
+    const v = fitToWindow(state.image.width, state.image.height, wrap.clientWidth, wrap.clientHeight - top - bottom, pad);
+    state.viewport = { ...v, ty: v.ty + top };
+    fitted = true;
     notify();
   }
 
   function zoomBy(factor: number): void {
     if (!state.image) return;
-    state.viewport = zoomAt(state.viewport, [wrap.clientWidth / 2, wrap.clientHeight / 2], factor);
+    setViewport(zoomAt(state.viewport, [wrap.clientWidth / 2, wrap.clientHeight / 2], factor));
     notify();
   }
 
@@ -303,8 +338,10 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
       : pending
         ? ['info', 'Saving…']
         : ['ok', store.kind === 'local' ? 'Saved in this browser' : 'Saved'];
-    savePill.className = `pill ${cls}`;
+    savePill.className = `pill ${cls} save-pill`;
     savePill.textContent = text;
+    savePill.title = text;
+    savePill.setAttribute('aria-label', text);
   }
 
   // ---------- status + previous / next ----------
@@ -392,7 +429,7 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
       // with small deltas, so it gets a stronger factor.
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? cssH : 1;
       const k = e.ctrlKey ? 0.01 : 0.0015;
-      state.viewport = zoomAt(state.viewport, screenPoint(e), Math.exp(-e.deltaY * unit * k));
+      setViewport(zoomAt(state.viewport, screenPoint(e), Math.exp(-e.deltaY * unit * k)));
       notify();
     },
     { passive: false },
@@ -408,26 +445,53 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     e.preventDefault();
     const ge = e as unknown as { scale: number; clientX: number; clientY: number };
     const factor = (gestureStartScale * ge.scale) / state.viewport.scale;
-    state.viewport = zoomAt(state.viewport, screenPoint(ge), factor);
+    setViewport(zoomAt(state.viewport, screenPoint(ge), factor));
     notify();
   });
 
   // ---------- pan + click ----------
-  // Middle-drag or Space+drag pans at once. A left-drag also pans once it moves
-  // past CLICK_SLOP, so the image can be moved with a plain mouse; a left press
-  // that stays put is treated as a click.
+  // Middle-drag or Space+drag pans at once. A left-drag (or one finger) also
+  // pans once it moves past the click slop, so the image can be moved with a
+  // plain mouse or a finger; a press that stays put is a click / tap.
+  // Two fingers pinch to zoom and pan.
   let spaceDown = false;
   let drag: { id: number; startX: number; startY: number; lastX: number; lastY: number; panning: boolean } | null =
     null;
-  let suppressClick = false;
+  /** Clicks before this time come from a drag, stroke or pinch that just ended. */
+  let ignoreClicksUntil = 0;
+  const swallowNextClick = () => (ignoreClicksUntil = performance.now() + CLICK_AFTER_GESTURE_MS);
   /** Point of the selected cell being dragged; `moved` defers the undo entry until it actually moves. */
   let vertexDrag: { id: number; ring: Ring; index: number; moved: boolean } | null = null;
+  /** Fingers currently on the canvas, in screen px. */
+  const pointers = new Map<number, Point>();
+  let pinch: { start: Viewport; a: number; b: number; a0: Point; b0: Point } | null = null;
+  const isTouch = () => state.pointerType === 'touch';
+  const handlePx = () => (isTouch() ? HANDLE_PX.touch : HANDLE_PX.mouse);
+  const clickSlop = () => (isTouch() ? CLICK_SLOP.touch : CLICK_SLOP.mouse);
+
+  /** A second finger landed: drop whatever the first one started and pinch instead. */
+  function startPinch(): void {
+    drag = null;
+    vertexDrag = null; // a move already made stays, with its undo entry
+    if (state.draft?.stroke) state.draft = { ...state.draft, stroke: null }; // discard, don't close
+    const [[a, a0], [b, b0]] = [...pointers.entries()];
+    pinch = { start: state.viewport, a, b, a0, b0 };
+    state.cursor = null;
+    state.hover = null;
+    notify();
+  }
 
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 && e.button !== 1) return;
     if (e.button === 1) e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
+    state.pointerType = e.pointerType || 'mouse';
     const [x, y] = screenPoint(e);
+    if (e.pointerType === 'touch') {
+      pointers.set(e.pointerId, [x, y]);
+      if (pointers.size === 2) return startPinch();
+      if (pointers.size > 2 || pinch) return;
+    }
     if (e.button === 0 && !spaceDown && startVertexDrag([x, y])) return;
     if (e.button === 0 && !spaceDown && state.draft?.mode === 'freehand') {
       state.draft = { ...state.draft, stroke: [screenToImage(state.viewport, [x, y])] };
@@ -443,7 +507,7 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     const cell = state.cells.find((c) => c.id === state.selectedId);
     if (!cell || state.draft || !state.image) return false;
     const p = screenToImage(state.viewport, screen);
-    const tol = HANDLE_PX / state.viewport.scale;
+    const tol = handlePx() / state.viewport.scale;
     const v = hitVertex(cell, p, tol);
     if (v) {
       vertexDrag = { id: cell.id, ...v, moved: false };
@@ -466,6 +530,15 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
 
   canvas.addEventListener('pointermove', (e) => {
     const p = screenPoint(e);
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, p);
+    if (pinch) {
+      const a1 = pointers.get(pinch.a);
+      const b1 = pointers.get(pinch.b);
+      if (a1 && b1) setViewport(pinchViewport(pinch.start, pinch.a0, pinch.b0, a1, b1));
+      notify();
+      return;
+    }
+    if (e.pointerType === 'touch' && !pointers.has(e.pointerId)) return;
     if (state.draft?.stroke) {
       const ip = screenToImage(state.viewport, p);
       const stroke = state.draft.stroke;
@@ -480,12 +553,12 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
       const { ring, index } = vertexDrag;
       updateCell(vertexDrag.id, (c) => (c[ring] = moveVertex(c[ring], index, ip)));
     } else if (drag && drag.id === e.pointerId) {
-      if (!drag.panning && Math.hypot(p[0] - drag.startX, p[1] - drag.startY) > CLICK_SLOP) {
+      if (!drag.panning && Math.hypot(p[0] - drag.startX, p[1] - drag.startY) > clickSlop()) {
         drag.panning = true;
         updateCursorStyle();
       }
       if (drag.panning) {
-        state.viewport = pan(state.viewport, p[0] - drag.lastX, p[1] - drag.lastY);
+        setViewport(pan(state.viewport, p[0] - drag.lastX, p[1] - drag.lastY));
       }
       drag.lastX = p[0];
       drag.lastY = p[1];
@@ -497,10 +570,11 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
 
   function updateHover(): void {
     const cell = state.cells.find((c) => c.id === state.selectedId);
-    if (!cell || !state.cursor || state.draft || drag || vertexDrag) {
+    // Fingers don't hover, so there is nothing to preview for touch.
+    if (!cell || !state.cursor || state.draft || drag || vertexDrag || isTouch()) {
       state.hover = null;
     } else {
-      const tol = HANDLE_PX / state.viewport.scale;
+      const tol = handlePx() / state.viewport.scale;
       const vertex = hitVertex(cell, state.cursor, tol);
       state.hover = { vertex, edge: vertex ? null : hitEdge(cell, state.cursor, tol) };
     }
@@ -508,19 +582,32 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   }
 
   const endDrag = (e: PointerEvent) => {
+    pointers.delete(e.pointerId);
+    if (e.pointerType === 'touch') {
+      // No hover after the finger lifts: drop the cursor so nothing sticks there.
+      state.cursor = null;
+      state.hover = null;
+      notify();
+    }
+    if (pinch) {
+      // Stay in the pinch until every finger has lifted.
+      if (pointers.size === 0) pinch = null;
+      swallowNextClick();
+      return;
+    }
     if (state.draft?.stroke) {
       finishStroke();
-      suppressClick = true;
+      swallowNextClick();
       return;
     }
     if (vertexDrag) {
       vertexDrag = null;
-      suppressClick = true;
+      swallowNextClick();
       updateCursorStyle();
       return;
     }
     if (!drag || drag.id !== e.pointerId) return;
-    suppressClick = drag.panning;
+    if (drag.panning) swallowNextClick();
     drag = null;
     updateCursorStyle();
   };
@@ -532,10 +619,7 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   });
 
   canvas.addEventListener('click', (e) => {
-    if (suppressClick) {
-      suppressClick = false;
-      return;
-    }
+    if (performance.now() < ignoreClicksUntil) return;
     if (!state.image) return;
     handleClick(screenPoint(e), e.detail);
   });
@@ -553,7 +637,7 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
       const p = clampToImage(screenToImage(state.viewport, screen), img.width, img.height);
       const last = d.points[d.points.length - 1];
       const tooClose = last && Math.hypot(p[0] - last[0], p[1] - last[1]) * state.viewport.scale < DUPLICATE_PX;
-      if (isNearFirstPoint(d, p, CLOSE_RADIUS_PX / state.viewport.scale)) finishShape();
+      if (isNearFirstPoint(d, p, closeRadiusPx(state.pointerType) / state.viewport.scale)) finishShape();
       else if (!tooClose) state.draft = addPoint(d, p);
       notify();
       return;
@@ -813,12 +897,15 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
   const bannerText = ref('bannerText');
   const bannerUndo = ref<HTMLButtonElement>('bannerUndo');
   const bannerFinish = ref<HTMLButtonElement>('bannerFinish');
+  const sheetTitle = ref('sheetTitle');
+  const sheetSummary = ref('sheetSummary');
+  // Phones: the inspector is a bottom sheet; its header toggles it open.
+  const workspace = root.querySelector<HTMLElement>('.workspace')!;
+  ref('sheetHeader').addEventListener('click', () => workspace.classList.toggle('sheet-open'));
 
   function flashBanner(): void {
-    banner.animate(
-      [{ transform: 'translateX(-50%)' }, { transform: 'translateX(calc(-50% - 8px))' }, { transform: 'translateX(-50%)' }],
-      { duration: 180, iterations: 2 },
-    );
+    // `translate` stacks on top of whatever `transform` positions the banner.
+    banner.animate([{ translate: '0' }, { translate: '-8px 0' }, { translate: '0' }], { duration: 180, iterations: 2 });
   }
 
   function updateBanner(): void {
@@ -832,17 +919,23 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     bannerFinish.classList.toggle('hidden', freehand);
     if (freehand) {
       const what = outer ? 'outer ring' : 'dark center';
-      bannerText.innerHTML = `<b>Step ${outer ? 1 : 2} of 2</b> · Trace around the <b>${what}</b><small>Hold the mouse button, go all the way around, then let go. Scroll or Space+drag to move the view.</small>`;
+      const tip = isTouch()
+        ? 'Keep your finger down, go all the way around, then lift it. Pinch with two fingers to zoom or move.'
+        : 'Hold the mouse button, go all the way around, then let go. Scroll or Space+drag to move the view.';
+      bannerText.innerHTML = `<b>Step ${outer ? 1 : 2} of 2</b> · Trace around the <b>${what}</b><small>${tip}</small>`;
       return;
     }
     const remaining = Math.max(0, 3 - d.points.length);
     const how =
       remaining > 0
         ? `Place at least ${remaining} more point${remaining === 1 ? '' : 's'}.`
-        : 'To finish, click the first point, double-click, or press Enter.';
+        : isTouch()
+          ? 'To finish, tap the first point or press Finish.'
+          : 'To finish, click the first point, double-click, or press Enter.';
+    const verb = isTouch() ? 'Tap' : 'Click';
     bannerText.innerHTML = outer
-      ? `<b>Step 1 of 2</b> · Click around the <b>outer ring</b><small>${how}</small>`
-      : `<b>Step 2 of 2</b> · Click around the <b>dark center</b><small>${how}</small>`;
+      ? `<b>Step 1 of 2</b> · ${verb} around the <b>outer ring</b><small>${how}</small>`
+      : `<b>Step 2 of 2</b> · ${verb} around the <b>dark center</b><small>${how}</small>`;
     bannerUndo.disabled = d.points.length === 0;
     bannerFinish.disabled = !canClose(d);
   }
@@ -864,7 +957,12 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     cellCount.textContent = String(state.cells.length);
     doneBtn.classList.toggle('active', state.status === 'done');
     doneBtn.disabled = !img;
-    doneBtn.innerHTML = `${icon('check')} ${state.status === 'done' ? 'Done' : 'Mark as done'}`;
+    doneBtn.innerHTML = `${icon('check')} <span class="label">${state.status === 'done' ? 'Done' : 'Mark as done'}</span>`;
+    sheetTitle.textContent = `Cells · ${state.cells.length}`;
+    const sel = state.cells.find((x) => x.id === state.selectedId);
+    sheetSummary.textContent = sel
+      ? `Cell ${sel.id}: ${sel.measurements.gap_median === null ? '—' : `${sel.measurements.gap_median.toFixed(1)} px`}`
+      : '';
     updateSavePill();
     updateBanner();
     cellPanel.update(state);

@@ -24,6 +24,8 @@ export interface AppState {
   display: DisplaySettings;
   /** Last known cursor position in image pixels, or null when off the canvas. */
   cursor: [number, number] | null;
+  /** Kind of the last pointer used on the canvas; touch gets larger targets. */
+  pointerType: string;
   cells: Cell[];
   nextCellId: number;
   /** This user's progress on the image; saved with the annotation. */
@@ -52,6 +54,7 @@ export function createState(): AppState {
     viewport: { scale: 1, tx: 0, ty: 0 },
     display: { ...DEFAULT_DISPLAY },
     cursor: null,
+    pointerType: 'mouse',
     cells: [],
     nextCellId: 1,
     status: 'not_started',

@@ -52,3 +52,19 @@ export function fitToWindow(
 function clamp(x: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, x));
 }
+
+/**
+ * Two-finger pinch. Fingers were at a0/b0 when `start` was current and are now
+ * at a1/b1 (screen px). Scales by the change in finger distance and keeps the
+ * image point under the starting midpoint under the current midpoint, so one
+ * gesture zooms and pans together.
+ */
+export function pinchViewport(start: Viewport, a0: Point, b0: Point, a1: Point, b1: Point): Viewport {
+  const d0 = Math.hypot(b0[0] - a0[0], b0[1] - a0[1]);
+  const d1 = Math.hypot(b1[0] - a1[0], b1[1] - a1[1]);
+  const scale = clamp(start.scale * (d0 > 0 ? d1 / d0 : 1), MIN_SCALE, MAX_SCALE);
+  const [ix, iy] = screenToImage(start, [(a0[0] + b0[0]) / 2, (a0[1] + b0[1]) / 2]);
+  const mx = (a1[0] + b1[0]) / 2;
+  const my = (a1[1] + b1[1]) / 2;
+  return { scale, tx: mx - ix * scale, ty: my - iy * scale };
+}

@@ -906,3 +906,274 @@ dialog.modal .actions {
   height: 1px;
   background: var(--border-strong);
 }
+
+/* =====================================================================
+   Responsive: tablet (<= 900px) and phone (<= 600px), plus touch input.
+   Layout follows screen size; touch-only tweaks follow (hover: none).
+   ===================================================================== */
+
+@supports (height: 100dvh) {
+  #app {
+    height: 100dvh; /* tracks the iOS / Android address bar */
+  }
+}
+button,
+a,
+.card,
+summary,
+.switch {
+  touch-action: manipulation; /* no double-tap zoom on controls */
+}
+.back-link,
+.sheet-header {
+  display: none;
+}
+
+/* Touch screens have no hover: show hover-only controls, hide cursor read-outs. */
+@media (hover: none) {
+  .card .actions {
+    opacity: 1;
+  }
+  .card .actions button {
+    width: 40px;
+    min-height: 40px;
+  }
+  .hud {
+    display: none;
+  }
+}
+
+/* ---------- tablet ---------- */
+@media (max-width: 900px) {
+  .workspace {
+    grid-template-columns: 1fr 300px;
+  }
+  .brand-text,
+  .user-name,
+  .done-btn .label {
+    display: none;
+  }
+  .done-btn {
+    width: 34px;
+    padding: 0;
+  }
+  .toolbar .label {
+    display: none;
+  }
+  .library-inner {
+    padding: 22px 18px 48px;
+  }
+}
+
+/* ---------- phone ---------- */
+@media (max-width: 600px) {
+  :root {
+    --dock-h: calc(60px + env(safe-area-inset-bottom));
+    --sheet-peek: 52px;
+  }
+  .app {
+    grid-template-rows: 48px 1fr;
+  }
+  .topbar {
+    gap: 6px;
+    padding: 0 8px;
+  }
+
+  /* Annotate top bar: back chevron, file name, save dot, prev/next, done, avatar. */
+  .app:has(.workspace) .brand,
+  .crumbs > :not(.current),
+  .position {
+    display: none;
+  }
+  .back-link {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    color: var(--text);
+  }
+  .save-pill {
+    width: 10px;
+    height: 10px;
+    gap: 0;
+    padding: 0;
+    font-size: 0;
+    flex: none;
+    background: none;
+  }
+  .save-pill::before {
+    flex: none;
+    width: 10px;
+    height: 10px;
+  }
+  /* The sheet header already says "Cells · N". */
+  .inspector .panel:first-of-type > summary {
+    display: none;
+  }
+
+  /* Canvas fills the screen; the inspector becomes a bottom sheet. */
+  .workspace {
+    grid-template-columns: 1fr;
+    position: relative;
+  }
+  .inspector {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: var(--dock-h);
+    z-index: 20;
+    max-height: 65dvh;
+    border-left: 0;
+    border-top: 1px solid var(--border-strong);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
+    transform: translateY(calc(100% - var(--sheet-peek)));
+    transition: transform 0.25s ease;
+  }
+  .workspace.sheet-open .inspector {
+    transform: none;
+  }
+  .sheet-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: var(--sheet-peek);
+    padding: 14px 16px 8px;
+    border: 0;
+    border-radius: 16px 16px 0 0;
+    background: var(--surface);
+    justify-content: flex-start;
+    font-weight: 600;
+  }
+  .sheet-header .grip {
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    width: 36px;
+    height: 4px;
+    margin-left: -18px;
+    border-radius: 2px;
+    background: var(--border-strong);
+  }
+  .sheet-summary {
+    margin-left: auto;
+    color: var(--text-2);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Toolbar becomes a dock along the bottom edge. */
+  .toolbar {
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    height: var(--dock-h);
+    justify-content: space-around;
+    gap: 2px;
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+    border-radius: 0;
+    border-width: 1px 0 0;
+    background: var(--surface);
+  }
+  .toolbar button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .toolbar .segmented button {
+    min-height: 38px;
+    min-width: 40px;
+  }
+  .toolbar .sep,
+  .toolbar .zoom-group {
+    display: none;
+  }
+
+  /* Step prompt: full width under the top bar, icon-only buttons. */
+  .prompt {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    transform: none;
+    max-width: none;
+    gap: 8px;
+    padding: 8px 8px 8px 12px;
+    font-size: 13px;
+  }
+  .prompt .label {
+    display: none;
+  }
+  .prompt button {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0 8px;
+  }
+  .hud {
+    display: none;
+  }
+
+  /* Library */
+  .library-inner {
+    padding: 16px 12px 40px;
+  }
+  .library-head {
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .library-head h1 {
+    font-size: 21px;
+  }
+  .library-head > button.primary {
+    width: 100%;
+    min-height: 44px;
+  }
+  .library-head .spacer {
+    display: none;
+  }
+  .upload-progress {
+    margin-left: 0;
+  }
+  .library-tools input[type='search'] {
+    width: 100%;
+  }
+  .library-tools select {
+    flex: 1;
+  }
+  .library-tools .segmented {
+    display: flex;
+    width: 100%;
+  }
+  .library-tools .segmented button {
+    flex: 1;
+  }
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .card .meta {
+    padding: 9px 10px 10px;
+  }
+  .where-pill .label {
+    display: none;
+  }
+
+  /* Sign-in, dialogs, toasts */
+  .signin .card-form {
+    padding: 22px;
+  }
+  .toasts {
+    left: 12px;
+    right: 12px;
+    bottom: calc(var(--dock-h) + 12px);
+  }
+  .toast {
+    max-width: none;
+  }
+}

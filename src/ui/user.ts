@@ -19,9 +19,9 @@ export function mountUserMenu(container: HTMLElement, store: Store): void {
   const name = annotatorName(user);
   container.innerHTML = /* html */ `
     <button class="ghost" data-act="menu" title="Your name on annotations${store.kind === 'supabase' ? ', and sign out' : ''}">
-      <span class="avatar">${initials(name)}</span><span class="muted"></span>
+      <span class="avatar">${initials(name)}</span><span class="muted user-name"></span>
     </button>`;
-  container.querySelector('.muted')!.textContent = name;
+  container.querySelector('.user-name')!.textContent = name;
   container.querySelector('[data-act="menu"]')!.addEventListener('click', () => openUserDialog(store));
 }
 
