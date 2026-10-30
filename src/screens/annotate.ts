@@ -1,8 +1,10 @@
 // Annotation screen: canvas with zoom/pan, sidebar, status bar.
 
+import { applyDisplayFilters, CHANNELS } from '../canvas/filters';
 import { render } from '../canvas/render';
 import { fitToWindow, pan, screenToImage, zoomAt, type Point } from '../canvas/viewport';
-import { createState, notify, subscribe, type AppState } from '../state';
+import { createState, notify, subscribe, type AppState, type LoadedImage } from '../state';
+import { mountDisplayControls } from '../ui/sidebar';
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'];
 /** A left-button press that moves less than this (screen px) is a click, not a pan. */
@@ -26,7 +28,9 @@ const TEMPLATE = /* html */ `
         <button class="primary" data-ref="openEmpty">Open image…</button>
       </div>
     </div>
-    <aside class="sidebar" data-ref="sidebar"></aside>
+    <aside class="sidebar">
+      <section data-ref="displaySection"></section>
+    </aside>
   </main>
   <footer class="statusbar">
     <span data-ref="statusZoom"></span>
@@ -76,7 +80,8 @@ export function mountAnnotateScreen(root: HTMLElement): void {
 
   function fit(): void {
     if (!state.image) return;
-    state.viewport = fitToWindow(state.image.width, state.image.height, cssW, cssH);
+    // Read the live size: the ResizeObserver may not have reported yet.
+    state.viewport = fitToWindow(state.image.width, state.image.height, wrap.clientWidth, wrap.clientHeight);
     notify();
   }
 
@@ -93,10 +98,41 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       alert(`Could not open "${file.name}". The file may be damaged.`);
       return;
     }
-    state.image?.bitmap.close();
-    state.image = { filename: file.name, width: bitmap.width, height: bitmap.height, bitmap };
+    const { width, height } = bitmap;
+    const display = document.createElement('canvas');
+    display.width = width;
+    display.height = height;
+    const dctx = display.getContext('2d', { willReadFrequently: true })!;
+    dctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const pixels = dctx.getImageData(0, 0, width, height);
+    state.image = { filename: file.name, width, height, pixels, display };
+    refilter();
     fit();
   }
+
+  // ---------- display filters ----------
+  // Recomputed into the image's offscreen canvas only when settings change,
+  // and at most once per frame while a slider is being dragged.
+  let refilterRequested = false;
+  function refilter(): void {
+    if (state.image) applyFilters(state.image);
+  }
+  function requestRefilter(): void {
+    if (refilterRequested) return;
+    refilterRequested = true;
+    requestAnimationFrame(() => {
+      refilterRequested = false;
+      refilter();
+      notify();
+    });
+  }
+  function applyFilters(img: LoadedImage): void {
+    const out = new ImageData(img.width, img.height);
+    applyDisplayFilters(img.pixels, state.display, out.data);
+    img.display.getContext('2d')!.putImageData(out, 0, 0);
+  }
+  const displayControls = mountDisplayControls(ref('displaySection'), state.display, requestRefilter);
 
   const openPicker = () => fileInput.click();
   ref('open').addEventListener('click', openPicker);
@@ -230,7 +266,13 @@ export function mountAnnotateScreen(root: HTMLElement): void {
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'f' || e.key === 'F') fit();
+    const key = e.key.toLowerCase();
+    if (key === 'f') fit();
+    else if (key === 'g') {
+      state.display.channel = CHANNELS[(CHANNELS.indexOf(state.display.channel) + 1) % CHANNELS.length];
+      displayControls.sync();
+      requestRefilter();
+    }
   });
   window.addEventListener('keyup', (e) => {
     if (e.code === 'Space') {

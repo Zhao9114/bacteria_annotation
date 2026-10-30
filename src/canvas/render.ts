@@ -16,6 +16,6 @@ export function render(ctx: CanvasRenderingContext2D, state: AppState, cssW: num
   ctx.scale(v.scale, v.scale);
   // Show crisp pixels when zoomed in far enough to see them.
   ctx.imageSmoothingEnabled = v.scale < 2;
-  ctx.drawImage(img.bitmap, 0, 0);
+  ctx.drawImage(img.display, 0, 0);
   ctx.restore();
 }
