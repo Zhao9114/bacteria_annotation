@@ -324,7 +324,8 @@ export function mountAnnotateScreen(root: HTMLElement, store: Store, imageId: st
     } catch {
       neighbours = [];
     }
-    updateNav();
+    // The user may have left this screen while the list was loading.
+    if (!signal.aborted) updateNav();
   }
   function neighbourIndex(): number {
     return neighbours.findIndex((n) => n.id === imageId);
