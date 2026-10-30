@@ -18,9 +18,10 @@ export interface DisplaySettings {
   contrast: number;
 }
 
+/** The photo exactly as taken; users can switch to green or boost contrast. */
 export const DEFAULT_DISPLAY: DisplaySettings = {
-  channel: 'green',
-  stretch: true,
+  channel: 'rgb',
+  stretch: false,
   brightness: 0,
   contrast: 0,
 };

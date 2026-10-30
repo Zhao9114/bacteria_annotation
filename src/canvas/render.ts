@@ -19,8 +19,7 @@ export const RAY_REJECTED_COLOR = '#ff5a36';
 export const CLOSE_RADIUS_PX = 10;
 
 export function render(ctx: CanvasRenderingContext2D, state: AppState, cssW: number, cssH: number): void {
-  ctx.fillStyle = '#1d1f21';
-  ctx.fillRect(0, 0, cssW, cssH);
+  ctx.clearRect(0, 0, cssW, cssH); // the stage's CSS background shows through
 
   const img = state.image;
   if (!img) return;

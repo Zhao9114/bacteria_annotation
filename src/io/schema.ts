@@ -10,6 +10,8 @@ export type Polygon = Point[];
 export const FLAGS = ['rim_cut', 'unsure', 'out_of_focus', 'overlapping'] as const;
 export type Flag = (typeof FLAGS)[number];
 
+export type DrawMode = 'points' | 'freehand';
+
 export interface Cell {
   id: number;
   /** Outer dark ring. */
@@ -18,6 +20,8 @@ export interface Cell {
   inner: Polygon;
   flags: Flag[];
   note: string;
+  /** How the outlines were drawn: clicked point by point, or traced freehand (less precise). */
+  draw_mode: DrawMode;
   /** Derived from the polygons; recomputed whenever they or the settings change. */
   measurements: CellMeasurements;
 }

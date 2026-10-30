@@ -1,8 +1,10 @@
-// Annotation screen: canvas with zoom/pan, sidebar, status bar.
+// Annotation screen: canvas with zoom/pan, floating toolbar, inspector.
 
 import { applyDisplayFilters, CHANNELS } from '../canvas/filters';
 import { CLOSE_RADIUS_PX, INNER_COLOR, OUTER_COLOR, render } from '../canvas/render';
 import { fitToWindow, pan, screenToImage, zoomAt, type Point } from '../canvas/viewport';
+import { pointInPolygon } from '../measure/geometry';
+import { measureCell } from '../measure/measure';
 import { createState, notify, subscribe, type AppState, type LoadedImage } from '../state';
 import {
   addPoint,
@@ -13,52 +15,70 @@ import {
   removeLastPoint,
   startDraft,
 } from '../tools/draw';
-import { pointInPolygon } from '../measure/geometry';
-import { measureCell } from '../measure/measure';
+import { icon } from '../ui/icons';
 import { mountCellPanel, mountDisplayControls, mountMeasurementControls } from '../ui/sidebar';
+import { toast } from '../ui/toast';
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'];
 /** A left-button press that moves less than this (screen px) is a click, not a pan. */
 const CLICK_SLOP = 4;
 /** A click this close (screen px) to the previous point is ignored rather than added twice. */
 const DUPLICATE_PX = 3;
+const ZOOM_STEP = 1.25;
 
 const TEMPLATE = /* html */ `
 <div class="app">
   <header class="topbar">
-    <h1>Bacteria Cell Annotation</h1>
-    <span class="filename" data-ref="filename"></span>
+    <a class="brand" href="#/library"><span class="logo">${icon('logo')}</span>Cell Annotator</a>
+    <nav class="crumbs"><span>/</span><span class="current" data-ref="crumbFile">No image</span></nav>
     <span class="spacer"></span>
-    <button data-ref="fit" title="Show the whole image (F)">Fit to window</button>
-    <button class="primary" data-ref="open" title="Open an image from your computer">Open image…</button>
+    <button class="primary" data-ref="open" title="Open an image from your computer">${icon('upload')} Open image</button>
     <input type="file" accept="image/*" data-ref="fileInput" hidden />
   </header>
   <main class="workspace">
-    <div class="canvas-wrap" data-ref="wrap">
+    <div class="stage" data-ref="wrap">
       <canvas data-ref="canvas"></canvas>
-      <div class="empty-hint" data-ref="emptyHint">
-        <div>Drag an image here, or</div>
-        <button class="primary" data-ref="openEmpty">Open image…</button>
+      <div class="empty-state" data-ref="emptyHint">
+        <div class="card glass">
+          <div class="big-icon">${icon('image')}</div>
+          <h2>Open a microscope image</h2>
+          <div>Drag a photo here, or</div>
+          <button class="primary" data-ref="openEmpty">${icon('upload')} Choose image</button>
+        </div>
       </div>
-      <div class="prompt-banner hidden" data-ref="banner">
+      <div class="toolbar glass hidden" data-ref="toolbar">
+        <button class="ghost icon-btn" data-ref="toolSelect" title="Select cells and move the image (Esc)">${icon('pointer')}</button>
+        <button class="ghost" data-ref="toolAdd" title="Add a cell (N)">${icon('plus')} Add cell</button>
+        <span class="sep"></span>
+        <button class="ghost icon-btn" data-ref="zoomOut" title="Zoom out (or scroll)">${icon('zoomOut')}</button>
+        <span class="zoom" data-ref="zoomLabel"></span>
+        <button class="ghost icon-btn" data-ref="zoomIn" title="Zoom in (or scroll)">${icon('zoomIn')}</button>
+        <button class="ghost icon-btn" data-ref="fit" title="Fit the whole image (F)">${icon('fit')}</button>
+      </div>
+      <div class="prompt glass hidden" data-ref="banner">
         <span class="swatch" data-ref="bannerSwatch"></span>
         <span class="text" data-ref="bannerText"></span>
-        <button data-ref="bannerUndo" title="Remove the last point you clicked (Backspace)">Undo point</button>
-        <button data-ref="bannerFinish" title="Close this shape (Enter)">Finish shape</button>
-        <button data-ref="bannerCancel" title="Stop adding this cell (Esc)">Cancel</button>
+        <button class="ghost" data-ref="bannerUndo" title="Remove the last point you clicked (Backspace)">${icon('undo')} Point</button>
+        <button data-ref="bannerFinish" title="Close this shape (Enter)">${icon('check')} Finish</button>
+        <button class="ghost icon-btn" data-ref="bannerCancel" title="Stop adding this cell (Esc)">${icon('x')}</button>
       </div>
+      <div class="hud glass" data-ref="hud"></div>
     </div>
-    <aside class="sidebar">
-      <section data-ref="cellsSection"></section>
-      <section data-ref="measureSection"></section>
-      <section data-ref="displaySection"></section>
+    <aside class="inspector">
+      <details class="panel" open>
+        <summary>Cells <span class="count" data-ref="cellCount">0</span></summary>
+        <div class="body" data-ref="cellsSection"></div>
+      </details>
+      <details class="panel" open>
+        <summary>Measurement</summary>
+        <div class="body" data-ref="measureSection"></div>
+      </details>
+      <details class="panel">
+        <summary>Display</summary>
+        <div class="body" data-ref="displaySection"></div>
+      </details>
     </aside>
   </main>
-  <footer class="statusbar">
-    <span data-ref="statusTool"></span>
-    <span data-ref="statusZoom"></span>
-    <span data-ref="statusCursor"></span>
-  </footer>
 </div>`;
 
 export function mountAnnotateScreen(root: HTMLElement): void {
@@ -110,10 +130,16 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     notify();
   }
 
+  function zoomBy(factor: number): void {
+    if (!state.image) return;
+    state.viewport = zoomAt(state.viewport, [wrap.clientWidth / 2, wrap.clientHeight / 2], factor);
+    notify();
+  }
+
   // ---------- image loading ----------
   async function loadFile(file: File): Promise<void> {
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      alert(`"${file.name}" is not a supported image. Please use PNG, JPEG, WebP, BMP or GIF.`);
+      toast(`"${file.name}" is not a supported image. Please use PNG, JPEG, WebP, BMP or GIF.`, 'error');
       return;
     }
     if (
@@ -126,7 +152,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     try {
       bitmap = await createImageBitmap(file);
     } catch {
-      alert(`Could not open "${file.name}". The file may be damaged.`);
+      toast(`Could not open "${file.name}". The file may be damaged.`, 'error');
       return;
     }
     const { width, height } = bitmap;
@@ -174,6 +200,8 @@ export function mountAnnotateScreen(root: HTMLElement): void {
   ref('open').addEventListener('click', openPicker);
   ref('openEmpty').addEventListener('click', openPicker);
   ref('fit').addEventListener('click', fit);
+  ref('zoomIn').addEventListener('click', () => zoomBy(ZOOM_STEP));
+  ref('zoomOut').addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
   fileInput.addEventListener('change', () => {
     const file = fileInput.files?.[0];
     if (file) void loadFile(file);
@@ -342,6 +370,7 @@ export function mountAnnotateScreen(root: HTMLElement): void {
         inner: result.inner,
         flags: [],
         note: '',
+        draw_mode: 'points',
         measurements: measureCell(result.outer, result.inner, state.measurement),
       });
       state.revision++;
@@ -402,6 +431,8 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     state.revision++;
   }
 
+  ref('toolSelect').addEventListener('click', () => cancelDraft());
+  ref('toolAdd').addEventListener('click', startAddCell);
   ref('bannerUndo').addEventListener('click', undoPoint);
   ref('bannerFinish').addEventListener('click', finishShape);
   ref('bannerCancel').addEventListener('click', cancelDraft);
@@ -450,12 +481,15 @@ export function mountAnnotateScreen(root: HTMLElement): void {
     }
   });
 
-  // ---------- chrome (top bar, status bar) ----------
-  const filenameEl = ref('filename');
+  // ---------- chrome (top bar, toolbar, prompt, HUD) ----------
+  const crumbFile = ref('crumbFile');
   const emptyHint = ref('emptyHint');
-  const statusTool = ref('statusTool');
-  const statusZoom = ref('statusZoom');
-  const statusCursor = ref('statusCursor');
+  const toolbar = ref('toolbar');
+  const toolSelect = ref('toolSelect');
+  const toolAdd = ref<HTMLButtonElement>('toolAdd');
+  const zoomLabel = ref('zoomLabel');
+  const hud = ref('hud');
+  const cellCount = ref('cellCount');
   const banner = ref('banner');
   const bannerSwatch = ref('bannerSwatch');
   const bannerText = ref('bannerText');
@@ -481,31 +515,30 @@ export function mountAnnotateScreen(root: HTMLElement): void {
         ? `Place at least ${remaining} more point${remaining === 1 ? '' : 's'}.`
         : 'To finish, click the first point, double-click, or press Enter.';
     bannerText.innerHTML = outer
-      ? `<b>Step 1 of 2:</b> Click around the <b>outer ring</b>.<small>${how}</small>`
-      : `<b>Step 2 of 2:</b> Now click around the <b>dark center</b>.<small>${how}</small>`;
+      ? `<b>Step 1 of 2</b> · Click around the <b>outer ring</b><small>${how}</small>`
+      : `<b>Step 2 of 2</b> · Click around the <b>dark center</b><small>${how}</small>`;
     bannerUndo.disabled = d.points.length === 0;
     bannerFinish.disabled = !canClose(d);
   }
 
   function updateChrome(): void {
     const img = state.image;
-    filenameEl.textContent = img ? `${img.filename}  (${img.width} × ${img.height})` : '';
+    crumbFile.textContent = img ? img.filename : 'No image';
+    crumbFile.title = img ? `${img.filename} (${img.width} × ${img.height} px)` : '';
     emptyHint.classList.toggle('hidden', !!img);
+    toolbar.classList.toggle('hidden', !img);
+    toolSelect.classList.toggle('active', !state.draft);
+    toolAdd.classList.toggle('active', !!state.draft);
+    zoomLabel.textContent = `${Math.round(state.viewport.scale * 100)}%`;
+    cellCount.textContent = String(state.cells.length);
     updateBanner();
     cellPanel.update(state);
-    statusTool.textContent = !img
-      ? ''
-      : state.draft
-        ? state.draft.phase === 'outer'
-          ? 'Adding cell: outer ring'
-          : 'Adding cell: dark center'
-        : 'Ready';
-    statusZoom.textContent = img ? `Zoom ${Math.round(state.viewport.scale * 100)}%` : '';
+
     const c = state.cursor;
-    statusCursor.textContent =
-      c && img && c[0] >= 0 && c[1] >= 0 && c[0] < img.width && c[1] < img.height
-        ? `Pixel x ${Math.floor(c[0])}, y ${Math.floor(c[1])}`
-        : '';
+    const inImage = c && img && c[0] >= 0 && c[1] >= 0 && c[0] < img.width && c[1] < img.height;
+    hud.textContent = img
+      ? `${img.width} × ${img.height} px${inImage ? `   ·   x ${Math.floor(c[0])}, y ${Math.floor(c[1])}` : ''}`
+      : '';
   }
 
   subscribe(() => {

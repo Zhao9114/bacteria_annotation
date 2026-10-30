@@ -1,15 +1,17 @@
-// Sidebar sections for the annotation screen.
+// Inspector panels for the annotation screen. Each mounts into a panel body;
+// the panel headings live in the screen template.
 
 import { DEFAULT_DISPLAY, type Channel, type DisplaySettings } from '../canvas/filters';
 import { INNER_COLOR, OUTER_COLOR, RAY_KEPT_COLOR, RAY_REJECTED_COLOR } from '../canvas/render';
 import type { Cell } from '../io/schema';
 import type { CellMeasurements, MeasurementSettings } from '../measure/measure';
 import type { AppState } from '../state';
+import { icon } from './icons';
 
 const CHANNEL_LABELS: Record<Channel, string> = {
   rgb: 'Original colours',
   red: 'Red only',
-  green: 'Green only (clearest)',
+  green: 'Green only (clearest edges)',
   blue: 'Blue only',
 };
 
@@ -24,16 +26,14 @@ export function mountDisplayControls(
   onChange: () => void,
 ): DisplayControls {
   container.innerHTML = /* html */ `
-    <h2>Image display</h2>
-    <div class="field" title="Which colour of the photo to show. Green usually shows the cell edges best. Shortcut: G">
+    <div class="field" title="Which colour of the photo to show. Green often shows the cell edges best. Shortcut: G">
       <label for="disp-channel">Colours</label>
-      <select id="disp-channel">
+      <select id="disp-channel" style="grid-column: span 2">
         ${(Object.keys(CHANNEL_LABELS) as Channel[]).map((c) => `<option value="${c}">${CHANNEL_LABELS[c]}</option>`).join('')}
       </select>
-      <span></span>
     </div>
-    <label class="check" title="Spread the darkest and brightest parts of the photo across the full range so faint edges stand out">
-      <input type="checkbox" id="disp-stretch" /> Boost contrast automatically
+    <label class="switch" title="Spread the darkest and brightest parts of the photo across the full range so faint edges stand out">
+      Boost contrast automatically <input type="checkbox" id="disp-stretch" />
     </label>
     <div class="field" title="Make the whole image lighter or darker">
       <label for="disp-brightness">Brightness</label>
@@ -45,7 +45,7 @@ export function mountDisplayControls(
       <input type="range" id="disp-contrast" min="-100" max="100" step="1" />
       <span class="value" id="disp-contrast-val"></span>
     </div>
-    <button id="disp-reset" title="Go back to the recommended display settings">Reset display</button>
+    <button id="disp-reset" class="ghost" style="margin-top: 6px" title="Show the photo as it was taken">Reset to original</button>
     <p class="note">These settings only change how the image looks on screen. The photo itself is never changed.</p>
   `;
   const q = <T extends HTMLElement>(id: string) => container.querySelector<T>(`#${id}`)!;
@@ -109,14 +109,13 @@ export interface CellPanel {
 
 export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): CellPanel {
   container.innerHTML = /* html */ `
-    <h2>Cells</h2>
-    <button class="primary add-cell" data-act="add" title="Mark a new cell: first the outer ring, then the dark center. Shortcut: N">+ Add cell</button>
+    <button class="primary add-cell" data-act="add" title="Mark a new cell: first the outer ring, then the dark center. Shortcut: N">${icon('plus')} Add cell</button>
     <div class="legend">
       <span style="--c: ${OUTER_COLOR}">Outer ring</span>
       <span style="--c: ${INNER_COLOR}">Dark center</span>
     </div>
-    <label class="check" style="margin-top: 10px" title="Shade the area between the outer ring and the dark center">
-      <input type="checkbox" data-act="band" /> Shade the distance band
+    <label class="switch" title="Shade the area between the outer ring and the dark center">
+      Shade the distance band <input type="checkbox" data-act="band" />
     </label>
     <ul class="cell-list"></ul>
   `;
@@ -145,7 +144,7 @@ export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): 
     lastKey = key;
 
     if (state.cells.length === 0) {
-      list.innerHTML = `<li class="empty-list" style="border: 0">${
+      list.innerHTML = `<li class="empty-list">${
         state.image ? 'No cells yet. Click “Add cell” to mark the first one.' : 'Open an image to start.'
       }</li>`;
       return;
@@ -157,6 +156,7 @@ export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): 
         <li data-id="${c.id}" class="${selected ? 'selected' : ''}">
           <button class="cell-row" data-act="select" title="Select this cell to see all its measurements">
             <span class="name">Cell ${c.id}</span>
+            ${c.draw_mode === 'freehand' ? '<span class="tag">freehand</span>' : ''}
             ${c.measurements.inner_inside_outer ? '' : '<span class="warn-badge" title="The dark center goes outside the outer ring">check</span>'}
             <span class="main" title="Median distance from the dark center edge to the outer ring">${fmt(c.measurements.gap_median)} px</span>
           </button>
@@ -165,7 +165,7 @@ export function mountCellPanel(container: HTMLElement, cb: CellPanelCallbacks): 
               ? /* html */ `<div class="cell-detail">
                   ${cellDetail(c)}
                   <div class="cell-actions">
-                    <button class="danger" data-act="delete" title="Remove this cell">Delete cell</button>
+                    <button class="danger" data-act="delete" title="Remove this cell (Delete)">${icon('trash')} Delete cell</button>
                   </div>
                 </div>`
               : ''
@@ -247,21 +247,19 @@ export function mountMeasurementControls(
   onChange: (settingsChanged: boolean) => void,
 ): MeasurementControls {
   container.innerHTML = /* html */ `
-    <h2>Measurement</h2>
-    <label class="check" title="Show the lines used to measure the selected cell. Shortcut: R">
-      <input type="checkbox" data-act="rays" /> Show measurement lines
+    <label class="switch" title="Show the lines used to measure the selected cell. Shortcut: R">
+      Show measurement lines <input type="checkbox" data-act="rays" />
     </label>
-    <div class="legend" style="margin: 0 0 10px">
+    <div class="legend" style="margin: 0 0 8px">
       <span style="--c: ${RAY_KEPT_COLOR}">Used</span>
       <span style="--c: ${RAY_REJECTED_COLOR}">Left out (unusual)</span>
     </div>
     <div class="field" title="How many evenly spaced lines are drawn from the center of each cell. The analysis program uses 32.">
       <label for="meas-rays">Lines per cell</label>
-      <input type="number" id="meas-rays" min="4" max="360" step="1" />
-      <span></span>
+      <input type="number" id="meas-rays" min="4" max="360" step="1" style="grid-column: span 2" />
     </div>
-    <label class="check" title="Ignore lines whose distance is very different from the rest (same rule as the analysis program)">
-      <input type="checkbox" data-act="mad" /> Leave out unusual lines
+    <label class="switch" title="Ignore lines whose distance is very different from the rest (same rule as the analysis program)">
+      Leave out unusual lines <input type="checkbox" data-act="mad" />
     </label>
   `;
   const rays = container.querySelector<HTMLInputElement>('[data-act="rays"]')!;
