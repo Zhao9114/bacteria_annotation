@@ -43,7 +43,11 @@ The measurements appear on the right as soon as the cell is finished. The main n
 
 - Scroll to zoom.
 - Drag the image to move it. In Freehand mode, use `Space`+drag or the scroll wheel instead.
-- `F` fits the whole image on screen.
+- `0` fits the whole image on screen.
+
+### Checking an outline against the image
+
+Press `F` (or the eye button in the toolbar) to hide all annotations and see the plain image; press it again to bring them back. Flipping back and forth shows how well each outline follows the cell. While the annotations are hidden you can still zoom and move around, but clicks don't change any cells.
 
 ### On a phone or tablet
 
@@ -82,7 +86,8 @@ The **Display** panel only changes how the photo looks on screen; the photo itse
 | `Esc` | Cancel the cell being drawn / deselect |
 | `Delete` | Delete the selected point or cell |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
-| `F` | Fit image to window |
+| `F` | Show / hide the annotations (compare with the plain image) |
+| `0` | Fit image to window |
 | `G` | Cycle colour channel |
 | `R` | Show or hide measurement lines |
 | `←` / `→` | Previous / next image |

@@ -25,6 +25,11 @@ export interface ViewState {
   pointerType: PointerKind;
   /** What a press at the cursor would grab on the selected cell. */
   hover: HoverTarget | null;
+  /**
+   * Draw the cells at all. Hiding them shows the plain image for comparison;
+   * the canvas then only pans and zooms.
+   */
+  showAnnotations: boolean;
   /** Shade the band between the outer ring and the dark center. */
   showBand: boolean;
   /** Draw the measurement rays of the selected cell. */
@@ -38,6 +43,7 @@ export function createViewState(): ViewState {
     cursor: null,
     pointerType: 'mouse',
     hover: null,
+    showAnnotations: true,
     showBand: true,
     showRays: true,
   };

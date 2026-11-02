@@ -78,7 +78,8 @@ const TEMPLATE = /* html */ `
         <button class="ghost icon-btn zoom-group" data-ref="zoomOut" title="Zoom out (or scroll)">${icon('zoomOut')}</button>
         <span class="zoom zoom-group" data-ref="zoomLabel"></span>
         <button class="ghost icon-btn zoom-group" data-ref="zoomIn" title="Zoom in (or scroll)">${icon('zoomIn')}</button>
-        <button class="ghost icon-btn" data-ref="fit" title="Fit the whole image (F)">${icon('fit')}</button>
+        <button class="ghost icon-btn" data-ref="flip" title="Show or hide the annotations to compare them with the image (F)">${icon('eye')}</button>
+        <button class="ghost icon-btn" data-ref="fit" title="Fit the whole image (0)">${icon('fit')}</button>
       </div>
       <div class="prompt glass hidden" data-ref="banner">
         <span class="swatch" data-ref="bannerSwatch"></span>
@@ -87,6 +88,7 @@ const TEMPLATE = /* html */ `
         <button data-ref="bannerFinish" title="Close this shape (Enter)">${icon('check')} <span class="label">Finish</span></button>
         <button class="ghost icon-btn" data-ref="bannerCancel" title="Stop adding this cell (Esc)">${icon('x')}</button>
       </div>
+      <div class="peek-badge glass hidden" data-ref="peekBadge"></div>
       <div class="hud glass" data-ref="hud"></div>
     </div>
     <aside class="inspector" data-ref="inspector">
@@ -211,12 +213,13 @@ function mountEditor(
   }
 
   function scene(): Scene {
-    const sel = session.selectedCell;
-    const draft = session.draft;
+    const shown = view.showAnnotations;
+    const sel = shown ? session.selectedCell : null;
+    const draft = shown ? session.draft : null;
     return {
       image: image.display,
       viewport: view.viewport,
-      cells: session.cells,
+      cells: shown ? session.cells : [],
       showBand: view.showBand,
       selection: sel ? { cell: sel, vertex: session.selectedVertex, hover: view.hover, rays: view.showRays } : null,
       drawing: draft ? { draft, cursor: view.cursor, closeRadiusPx: TARGET_PX[view.pointerType].close } : null,
@@ -424,14 +427,15 @@ function mountEditor(
   let spaceDown = false;
   let pinchStartViewport: Viewport = view.viewport;
   const gestures = new GestureRecognizer({
-    pressStart: (p, kind) => session.press(toImage(p), tolerances(kind)),
+    // With the annotations hidden the canvas only pans and zooms: no invisible edits.
+    pressStart: (p, kind) => view.showAnnotations && session.press(toImage(p), tolerances(kind)),
     dragMove: (p) => session.drag(toImage(p), tolerances()),
     dragEnd: () => {
       if (!session.release(tolerances())) flashBanner();
     },
     dragCancel: () => session.cancelPress(),
     tap: (p, count, kind) => {
-      if (!session.tap(toImage(p), count, tolerances(kind))) flashBanner();
+      if (view.showAnnotations && !session.tap(toImage(p), count, tolerances(kind))) flashBanner();
     },
     pan: (dx, dy) => setViewport(pan(view.viewport, dx, dy)),
     pinchStart() {
@@ -469,7 +473,9 @@ function mountEditor(
   function updateHover(): void {
     const busy = gestures.dragging || gestures.panning || gestures.pinching;
     view.hover =
-      view.cursor && !busy && view.pointerType !== 'touch' ? session.hoverTarget(view.cursor, tolerances().handle) : null;
+      view.cursor && !busy && view.showAnnotations && view.pointerType !== 'touch'
+        ? session.hoverTarget(view.cursor, tolerances().handle)
+        : null;
     updateCursorStyle();
   }
 
@@ -480,7 +486,7 @@ function mountEditor(
         ? 'move'
         : spaceDown
           ? 'grab'
-          : session.draft || view.hover?.edge
+          : (view.showAnnotations && session.draft) || view.hover?.edge
             ? 'crosshair'
             : 'default';
   }
@@ -489,6 +495,28 @@ function mountEditor(
   function setDrawMode(mode: DrawMode): void {
     localStorage.setItem(DRAW_MODE_KEY, mode);
     session.setDrawMode(mode);
+  }
+
+  /** Flip between the annotated image and the plain image. */
+  function showAnnotations(show: boolean): void {
+    view.showAnnotations = show;
+    view.hover = null;
+    if (!show) session.cancelPress(); // F in the middle of a drag or trace
+    ref('flip').classList.toggle('active', !show);
+    const badge = ref('peekBadge');
+    badge.classList.toggle('hidden', show);
+    // Touch-only devices have no F key to speak of (same test as the CSS uses).
+    badge.textContent = matchMedia('(hover: none)').matches
+      ? 'Annotations hidden · tap the eye to show them'
+      : 'Annotations hidden · press F or click the eye to show them';
+    updateCursorStyle();
+    invalidate();
+  }
+
+  /** Adding a cell needs the annotations visible. */
+  function startCell(): void {
+    if (!view.showAnnotations) showAnnotations(true);
+    session.startCell();
   }
 
   function finishShape(): void {
@@ -513,7 +541,7 @@ function mountEditor(
   }
 
   const cellPanel = mountCellPanel(ref('cellsSection'), {
-    onAdd: () => session.startCell(),
+    onAdd: startCell,
     onSelect: (id) => session.select(session.selectedId === id ? null : id),
     onDelete: deleteCell,
     onToggleBand: (show) => {
@@ -532,7 +560,8 @@ function mountEditor(
   measurementControls.sync({ showRays: view.showRays, settings: session.measurement });
 
   ref('toolSelect').addEventListener('click', () => session.cancelCell());
-  ref('toolAdd').addEventListener('click', () => session.startCell());
+  ref('toolAdd').addEventListener('click', startCell);
+  ref('flip').addEventListener('click', () => showAnnotations(!view.showAnnotations));
   ref('undo').addEventListener('click', () => session.undo());
   ref('redo').addEventListener('click', () => session.redo());
   ref('modeSwitch').addEventListener('click', (e) => {
@@ -576,10 +605,11 @@ function mountEditor(
       } else if (key === 'delete' || key === 'backspace') {
         e.preventDefault();
         deleteSelection();
-      } else if (key === 'n') session.startCell();
+      } else if (key === 'n') startCell();
       else if (key === 'd') setDrawMode(session.drawMode === 'freehand' ? 'points' : 'freehand');
       else if (key === 'r') toggleRays(!view.showRays);
-      else if (key === 'f') fit();
+      else if (key === 'f') showAnnotations(!view.showAnnotations);
+      else if (key === '0') fit();
       else if (key === 'g') {
         view.display.channel = CHANNELS[(CHANNELS.indexOf(view.display.channel) + 1) % CHANNELS.length];
         displayControls.sync();
@@ -627,7 +657,7 @@ function mountEditor(
 
   function updateBanner(): void {
     const d = session.draft;
-    banner.classList.toggle('hidden', !d);
+    banner.classList.toggle('hidden', !d || !view.showAnnotations);
     if (!d) return;
     const touch = view.pointerType === 'touch';
     const outer = d.phase === 'outer';
@@ -706,6 +736,7 @@ function mountEditor(
       get drawMode() { return session.drawMode; },
       get revision() { return session.revision; },
       get showRays() { return view.showRays; },
+      get showAnnotations() { return view.showAnnotations; },
     };
   }
 
