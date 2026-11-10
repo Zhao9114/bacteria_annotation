@@ -9,7 +9,7 @@ One microscope photo in the library, kept exactly as uploaded.
 _Avoid_: photo, picture, file
 
 **Library**:
-The images a person can see: the ones they uploaded, plus images others have shared.
+The images and videos a person can see: the ones they uploaded, plus ones others have shared.
 _Avoid_: gallery, dataset
 
 **Owner**:
@@ -19,6 +19,22 @@ _Avoid_: uploader, creator
 **Shared image**:
 An image its owner has made visible to everyone who is signed in.
 _Avoid_: public image
+
+**Video**:
+A phone recording of a sample that frames are picked from. Only the chosen frames are kept, not the recording itself.
+_Avoid_: clip, movie, recording (in UI text)
+
+**Frame**:
+One picture from a video, saved as an image so it can be annotated. Frames are numbered from 0 in the order they play.
+_Avoid_: still, snapshot, screenshot
+
+**Sharpness**:
+How in focus a frame is, compared with the other frames of the same video. Used to suggest which frames to annotate.
+_Avoid_: quality, focus score
+
+**Sensor pixel size**:
+The size of one pixel on the phone's camera sensor, as reported for that phone. It is not the size of a pixel on the specimen.
+_Avoid_: scale, resolution
 
 **Annotator**:
 The person who marks cells, identified on their annotations by the name they chose.

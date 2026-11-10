@@ -18,7 +18,20 @@ Forgot your password? Type your email on the sign-in page and click **Forgot pas
 
 ### Adding images
 
-On the **Images** page, click **Upload images** or drag photos onto the page. You can add several at once. A photo that is already in your library is skipped.
+In the **Library**, click **Upload images or video** or drag photos onto the page. You can add several at once. A photo that is already in your library is skipped.
+
+### Annotating frames from a video
+
+A phone video has hundreds of frames, so instead of annotating them all you pick a few good ones.
+
+1. Add the video (MP4 or MOV) the same way as a photo. The app reads it and checks every frame for sharpness, which takes a few seconds.
+2. It suggests the sharpest frame in each part of the video: 10 by default, spread from start to end. The timeline shows each frame's sharpness; suggested frames are marked in blue.
+3. Click the timeline (or use `←` / `→`, with `Shift` for ten frames) to look at other frames. **Use this frame** adds the one you're looking at, and × removes one. **Suggest again** picks a new set, with however many frames you ask for.
+4. Check the phone name (taken from the file name) and, if you know it, the sensor pixel size. Then click **Save**.
+
+Only the chosen frames are saved, as images, and the video file itself isn't kept. Each video gets its own card in the library; open it to see its frames and annotate them like any image. The arrows at the top move through the video's frames in order. To pick more frames later, open the video and click **Add frames**, then choose the same file again: frames you already saved are marked in green and won't be suggested twice.
+
+Measurements stay in pixels. The pixel size is stored with the video but isn't used to convert to µm, because one image pixel on the specimen also depends on the microscope's magnification.
 
 ### Marking a cell
 
@@ -64,9 +77,18 @@ The app works with touch. On a phone the tools sit along the bottom edge, and th
 - Click **Mark as done** when you have finished an image.
 - Use the arrows at the top (or the `←` / `→` keys) to go to the previous or next image.
 
+### Exporting results
+
+**Export** (in the library, or on a video's page) downloads what you have marked:
+
+- **Measurements (CSV):** one row per cell, with where it came from (image, or video with phone, frame number and time) and every measurement. Opens in Excel or Google Sheets.
+- **Outlines and measurements (JSON):** every annotation in full, including each outline's points, for comparing shapes with the network's output.
+
+In the library, Export covers everything you can see (your images and videos, or the shared ones); on a video's page, just that video's frames. Only your own annotations are exported.
+
 ### Sharing (online version)
 
-Images are private to whoever uploaded them. On the Images page, hover over one of your images and click the share icon to share it with everyone signed in. Each person's cells are saved separately. As the image's owner, you can later review everyone's annotations of it.
+Images are private to whoever uploaded them. In the library, hover over one of your images and click the share icon to share it with everyone signed in. Each person's cells are saved separately. As the image's owner, you can later review everyone's annotations of it.
 
 ### Display
 
@@ -172,10 +194,13 @@ Domain terms are defined in [GLOSSARY.md](GLOSSARY.md).
 
 - **Screens** (DOM only; the logic lives in the modules below)
   - [main.ts](src/main.ts): hash router.
-  - `src/screens/`: `library.ts`, `annotate.ts`, `signin.ts`.
+  - `src/screens/`: `library.ts`, `annotate.ts`, `signin.ts`, `video.ts` (a video's frames) and `frame-picker.ts` (choosing frames; loaded on demand through `pick-frames.ts`).
 - **Annotating**
   - [annotation/session.ts](src/annotation/session.ts): the annotation session. Cells, the cell being drawn, selection, undo/redo, status and settings behind one interface; it decides what a tap or a drag means (place a point, close an outline, select, move or insert a point, trace). Every cell is re-measured on change. Tested in `tests/session.test.ts`.
   - Its internals, in the same folder: [draft.ts](src/annotation/draft.ts) (the cell being drawn), [freehand.ts](src/annotation/freehand.ts) (trace → simplified outline), [edit.ts](src/annotation/edit.ts) (point hit-testing and edits), [history.ts](src/annotation/history.ts) (undo snapshots).
+- **Videos**
+  - [video/clip.ts](src/video/clip.ts): opens an MP4/MOV (mp4box) and decodes frames exactly with WebCodecs, numbered in display order like OpenCV; scores every frame and keeps small previews.
+  - [video/frames.ts](src/video/frames.ts): sharpness (variance of the Laplacian), suggestions spread over the clip, and names guessed from the file name. Pure; tested in `tests/frames.test.ts`.
 - **Input**
   - [input/gestures.ts](src/input/gestures.ts): turns mouse, pen and touch events into taps, double-taps, drags, pans, pinches and hover. Pure; tested with timed event sequences in `tests/gestures.test.ts`.
 - **Canvas**
@@ -187,5 +212,6 @@ Domain terms are defined in [GLOSSARY.md](GLOSSARY.md).
   - [measure.ts](src/measure/measure.ts): gap along measurement lines with the pipeline's MAD rule. `tests/measure.test.ts` includes numpy parity fixtures.
 - **Data and storage**
   - [schema.ts](src/io/schema.ts): annotation format (`schema_version: 1`; all coordinates in original image pixels); [annotation.ts](src/io/annotation.ts): document ↔ content.
-  - [storage/store.ts](src/storage/store.ts): the three interfaces a backend provides. `LibraryStore` (images, annotations) and `Account` (the annotator's name) have two adapters each, [local.ts](src/storage/local.ts) (IndexedDB) and [supabase.ts](src/storage/supabase.ts). `Auth` (sign-in) exists only online.
+  - [storage/store.ts](src/storage/store.ts): the three interfaces a backend provides. `LibraryStore` (images, videos and their frames, annotations) and `Account` (the annotator's name) have two adapters each, [local.ts](src/storage/local.ts) (IndexedDB) and [supabase.ts](src/storage/supabase.ts). `Auth` (sign-in) exists only online.
+  - [io/export.ts](src/io/export.ts): CSV and JSON export of annotations per image or video frame. Tested in `tests/export.test.ts`.
   - [storage/annotation-file.ts](src/storage/annotation-file.ts): opens an image's annotation and autosaves it (debounce, retry, timestamps; leaving an image waits for a save in progress, then saves the rest). Tested with an in-memory adapter in `tests/annotation-file.test.ts`.
