@@ -3,7 +3,9 @@
 
 import { compareImages, compareVideos, videoStatus, type Backend, type ImageSummary, type LibraryScope, type VideoSummary } from '../storage/store';
 import { prepareImage } from '../storage/upload';
+import { gatherExport } from '../io/export';
 import { imageCard, videoCard } from '../ui/cards';
+import { mountExportMenu } from '../ui/export-menu';
 import { icon } from '../ui/icons';
 import { toast } from '../ui/toast';
 import { mountUserMenu } from '../ui/user';
@@ -26,6 +28,7 @@ const TEMPLATE = /* html */ `
         </div>
         <span class="spacer"></span>
         <span class="upload-progress" data-ref="progress"></span>
+        <span data-ref="export"></span>
         <button class="primary" data-ref="upload" title="Add microscope photos, or a video to pick frames from">${icon('upload')} Upload images or video</button>
         <input type="file" accept="image/*,video/mp4,video/quicktime,.mp4,.mov,.m4v" multiple hidden data-ref="fileInput" />
       </div>
@@ -78,6 +81,12 @@ export function mountLibraryScreen(root: HTMLElement, { library, account, auth }
       : 'Images and annotations are stored in the online database.';
   mountUserMenu(ref('user'), account, auth);
   scopeSwitch.classList.toggle('hidden', !library.canShare);
+  mountExportMenu(
+    ref('export'),
+    () => (scope === 'shared' ? 'shared-annotations' : 'cell-annotations'),
+    () => gatherExport(library, { scope }),
+    signal,
+  );
 
   async function load(): Promise<void> {
     loading = true;

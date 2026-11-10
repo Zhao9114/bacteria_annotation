@@ -2,7 +2,9 @@
 // video's details. The owner can rename the phone, add frames, share or delete.
 
 import type { Backend, ImageSummary, VideoRecord } from '../storage/store';
+import { gatherExport } from '../io/export';
 import { imageCard } from '../ui/cards';
+import { mountExportMenu, slug } from '../ui/export-menu';
 import { icon } from '../ui/icons';
 import { toast } from '../ui/toast';
 import { mountUserMenu } from '../ui/user';
@@ -26,6 +28,7 @@ const TEMPLATE = /* html */ `
           <div class="muted" data-ref="summary"></div>
         </div>
         <span class="spacer"></span>
+        <span data-ref="export"></span>
         <span class="video-actions hidden" data-ref="actions">
           <button data-ref="share" class="hidden">${icon('share')} <span data-ref="shareLabel">Share</span></button>
           <button class="danger" data-ref="delete">${icon('trash')} Delete video</button>
@@ -52,6 +55,7 @@ export function mountVideoScreen(root: HTMLElement, { library, account, auth }: 
   mountUserMenu(ref('user'), account, auth);
 
   let video: VideoRecord | null = null;
+  mountExportMenu(ref('export'), () => slug(video?.phone || video?.filename || 'video'), () => gatherExport(library, { videoId }), signal);
   let frames: ImageSummary[] = [];
   const content = ref('content');
   const phoneInput = ref<HTMLInputElement>('phone');
