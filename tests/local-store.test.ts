@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { toDoc } from '../src/io/annotation';
 import { DEFAULT_MEASUREMENT_SETTINGS } from '../src/measure/measure';
 import { LocalAccount, LocalStore } from '../src/storage/local';
-import type { PreparedImage } from '../src/storage/store';
+import type { FrameSource, PreparedImage, PreparedVideo } from '../src/storage/store';
 
 // Node has no localStorage; the local store keeps the annotator name there.
 const mem = new Map<string, string>();
@@ -13,7 +13,7 @@ globalThis.localStorage = {
 } as Storage;
 
 let n = 0;
-function prepared(filename: string, sha256: string): PreparedImage {
+function prepared(filename: string, sha256: string, frame: FrameSource | null = null): PreparedImage {
   return {
     file: new Blob(['pixels-' + sha256], { type: 'image/png' }),
     filename,
@@ -22,8 +22,21 @@ function prepared(filename: string, sha256: string): PreparedImage {
     height: 400,
     sha256,
     thumb: new Blob(['thumb'], { type: 'image/jpeg' }),
+    frame,
   };
 }
+
+const video: PreparedVideo = {
+  filename: 'iPhone 14 Pro.mp4',
+  sha256: 'video-sha',
+  phone: 'iPhone 14 Pro',
+  pixel_size_um: 2.44,
+  width: 320,
+  height: 568,
+  fps: 30,
+  frame_count: 747,
+  duration: 24.9,
+};
 
 describe('LocalStore', () => {
   let store: LocalStore;
@@ -68,6 +81,67 @@ describe('LocalStore', () => {
     expect(await store.listImages('mine')).toEqual([]);
     expect(await store.getAnnotation(rec.id)).toBeNull();
     await expect(store.getImage(rec.id)).rejects.toThrow();
+  });
+
+  it('keeps video frames out of the image list and lists them per video in frame order', async () => {
+    await store.addImage(prepared('a.png', 'x'));
+    const v = await store.addVideo(video);
+    await store.addImage(prepared('f312.png', 'f312', { video_id: v.id, index: 312, time: 10.4 }));
+    await store.addImage(prepared('f45.png', 'f45', { video_id: v.id, index: 45, time: 1.5 }));
+    expect((await store.listImages('mine')).map((i) => i.filename)).toEqual(['a.png']);
+    expect((await store.listFrames(v.id)).map((f) => f.frame?.index)).toEqual([45, 312]);
+    const [summary] = await store.listVideos('mine');
+    expect(summary).toMatchObject({ phone: 'iPhone 14 Pro', frames: 2, started: 0, done: 0, frame_count: 747 });
+    expect(summary.thumbUrl).not.toBe('');
+  });
+
+  it('counts frames marked done, finds a video again by its hash, and edits it', async () => {
+    const v = await store.addVideo(video);
+    const f = (await store.addImage(prepared('f1.png', 'f1', { video_id: v.id, index: 1, time: 0 }))) as { id: string };
+    const doc = toDoc(
+      { cells: [], status: 'done', measurement: DEFAULT_MEASUREMENT_SETTINGS },
+      { filename: 'f1.png', sha256: 'f1', width: 320, height: 568 },
+      'Me',
+      null,
+    );
+    await store.saveAnnotation(f.id, doc);
+    expect((await store.listVideos('mine'))[0]).toMatchObject({ frames: 1, started: 1, done: 1 });
+    expect((await store.findVideo('video-sha'))?.id).toBe(v.id);
+    expect(await store.findVideo('other')).toBeNull();
+    await store.updateVideo(v.id, { phone: 'iPhone 14 Pro (lab)', pixel_size_um: null });
+    expect(await store.getVideo(v.id)).toMatchObject({ phone: 'iPhone 14 Pro (lab)', pixel_size_um: null });
+  });
+
+  it('deleting a video deletes its frames and their annotations', async () => {
+    const v = await store.addVideo(video);
+    const f = (await store.addImage(prepared('f1.png', 'f1', { video_id: v.id, index: 1, time: 0 }))) as { id: string };
+    await store.deleteVideo(v.id);
+    expect(await store.listVideos('mine')).toEqual([]);
+    expect(await store.listFrames(v.id)).toEqual([]);
+    await expect(store.getImage(f.id)).rejects.toThrow();
+    await expect(store.getVideo(v.id)).rejects.toThrow();
+  });
+
+  it('opens a library saved before videos existed', async () => {
+    const name = `old-db-${n++}`;
+    await new Promise<void>((resolve) => {
+      const req = indexedDB.open(name, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        db.createObjectStore('images', { keyPath: 'id' }).createIndex('sha256', 'sha256', { unique: true });
+        db.createObjectStore('thumbs');
+        db.createObjectStore('annotations');
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('images', 'readwrite');
+        tx.objectStore('images').add({ id: 'old', filename: 'old.png', sha256: 'o', width: 1, height: 1, blob: new Blob(['x']) });
+        tx.oncomplete = () => (db.close(), resolve());
+      };
+    });
+    const old = await LocalStore.open(name);
+    expect((await old.listImages('mine')).map((i) => [i.filename, i.frame])).toEqual([['old.png', null]]);
+    expect(await old.listVideos('mine')).toEqual([]);
   });
 
   it('the local account remembers the annotator name and announces changes', async () => {

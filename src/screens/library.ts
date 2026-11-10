@@ -1,19 +1,13 @@
-// Library screen: everyone's starting point. Upload images, see progress,
-// open one to annotate, share or delete your own.
+// Library screen: everyone's starting point. Upload images and videos, see
+// progress, open one to annotate, share or delete your own.
 
-import type { ImageStatus } from '../io/schema';
-import { compareImages, type Backend, type ImageSummary, type LibraryScope } from '../storage/store';
+import { compareImages, compareVideos, videoStatus, type Backend, type ImageSummary, type LibraryScope, type VideoSummary } from '../storage/store';
 import { prepareImage } from '../storage/upload';
+import { imageCard, videoCard } from '../ui/cards';
 import { icon } from '../ui/icons';
 import { toast } from '../ui/toast';
 import { mountUserMenu } from '../ui/user';
-
-const STATUS_LABEL: Record<ImageStatus, string> = {
-  not_started: 'Not started',
-  in_progress: 'In progress',
-  done: 'Done',
-};
-const STATUS_CLASS: Record<ImageStatus, string> = { not_started: '', in_progress: 'warn', done: 'ok' };
+import { pickFrames } from './pick-frames';
 
 const TEMPLATE = /* html */ `
 <div class="app">
@@ -27,21 +21,21 @@ const TEMPLATE = /* html */ `
     <div class="library-inner">
       <div class="library-head">
         <div>
-          <h1>Images</h1>
+          <h1>Library</h1>
           <div class="muted" data-ref="summary"></div>
         </div>
         <span class="spacer"></span>
         <span class="upload-progress" data-ref="progress"></span>
-        <button class="primary" data-ref="upload" title="Add microscope photos to the library">${icon('upload')} Upload images</button>
-        <input type="file" accept="image/*" multiple hidden data-ref="fileInput" />
+        <button class="primary" data-ref="upload" title="Add microscope photos, or a video to pick frames from">${icon('upload')} Upload images or video</button>
+        <input type="file" accept="image/*,video/mp4,video/quicktime,.mp4,.mov,.m4v" multiple hidden data-ref="fileInput" />
       </div>
       <div class="library-tools">
         <div class="segmented hidden" data-ref="scope">
           <button data-scope="mine">${icon('image')} My images</button>
           <button data-scope="shared">${icon('users')} Shared with me</button>
         </div>
-        <input type="search" placeholder="Search by name…" data-ref="search" />
-        <select data-ref="status" title="Show only images with this status">
+        <input type="search" placeholder="Search by name or phone…" data-ref="search" />
+        <select data-ref="status" title="Show only images and videos with this status">
           <option value="">All statuses</option>
           <option value="not_started">Not started</option>
           <option value="in_progress">In progress</option>
@@ -53,6 +47,8 @@ const TEMPLATE = /* html */ `
   </main>
 </div>`;
 
+const isVideo = (f: File) => f.type.startsWith('video/') || /\.(mp4|mov|m4v)$/i.test(f.name);
+
 export function mountLibraryScreen(root: HTMLElement, { library, account, auth }: Backend): () => void {
   root.innerHTML = TEMPLATE;
   const ref = <T extends HTMLElement>(name: string) => root.querySelector<T>(`[data-ref="${name}"]`)!;
@@ -62,6 +58,7 @@ export function mountLibraryScreen(root: HTMLElement, { library, account, auth }
   let scope: LibraryScope = (sessionStorage.getItem('libraryScope') as LibraryScope) || 'mine';
   if (!library.canShare) scope = 'mine';
   let images: ImageSummary[] = [];
+  let videos: VideoSummary[] = [];
   let loading = true;
 
   const main = ref('main');
@@ -86,20 +83,17 @@ export function mountLibraryScreen(root: HTMLElement, { library, account, auth }
     loading = true;
     draw();
     try {
-      images = await library.listImages(scope);
+      [images, videos] = await Promise.all([library.listImages(scope), library.listVideos(scope)]);
     } catch (e) {
       toast(`Could not load the library: ${(e as Error).message}`, 'error');
       images = [];
+      videos = [];
     }
     loading = false;
     draw();
   }
 
-  function visible(): ImageSummary[] {
-    const q = search.value.trim().toLowerCase();
-    const st = statusFilter.value;
-    return images.filter((i) => (!q || i.filename.toLowerCase().includes(q)) && (!st || i.status === st)).sort(compareImages);
-  }
+  const mine = (ownerId: string) => ownerId === account.currentUser()?.id;
 
   function draw(): void {
     // Async work (loading, uploads) can finish after the user has left this screen.
@@ -107,77 +101,64 @@ export function mountLibraryScreen(root: HTMLElement, { library, account, auth }
     for (const b of scopeSwitch.querySelectorAll<HTMLElement>('[data-scope]')) {
       b.classList.toggle('active', b.dataset.scope === scope);
     }
-    const done = images.filter((i) => i.status === 'done').length;
-    ref('summary').textContent = loading
-      ? 'Loading…'
-      : images.length
-        ? `${images.length} image${images.length === 1 ? '' : 's'} · ${done} done`
-        : '';
+    const done = images.filter((i) => i.status === 'done').length + videos.filter((v) => videoStatus(v) === 'done').length;
+    const parts = [
+      images.length ? `${images.length} image${images.length === 1 ? '' : 's'}` : '',
+      videos.length ? `${videos.length} video${videos.length === 1 ? '' : 's'}` : '',
+    ].filter(Boolean);
+    ref('summary').textContent = loading ? 'Loading…' : parts.length ? `${parts.join(' · ')} · ${done} done` : '';
 
     if (loading) {
       content.innerHTML = '';
       return;
     }
-    if (images.length === 0) {
+    if (images.length === 0 && videos.length === 0) {
       content.innerHTML =
         scope === 'shared'
           ? `<div class="dropzone">${icon('users')}<div>Nothing has been shared with you yet.</div></div>`
           : /* html */ `<div class="dropzone" data-ref="drop">
               <div class="big-icon" style="display:grid;place-items:center;width:54px;height:54px;border-radius:16px;background:var(--accent-soft);color:var(--accent-hover)">${icon('upload')}</div>
               <h2 style="margin:0;color:var(--text)">Add your first images</h2>
-              <div>Drag microscope photos anywhere on this page, or</div>
-              <button class="primary" data-act="upload">${icon('upload')} Choose images</button>
+              <div>Drag microscope photos or a video anywhere on this page, or</div>
+              <button class="primary" data-act="upload">${icon('upload')} Choose files</button>
             </div>`;
       return;
     }
-    const list = visible();
-    if (list.length === 0) {
-      content.innerHTML = `<div class="dropzone"><div>No images match your search.</div></div>`;
+    const q = search.value.trim().toLowerCase();
+    const st = statusFilter.value;
+    const shownVideos = videos
+      .filter((v) => (!q || `${v.phone} ${v.filename}`.toLowerCase().includes(q)) && (!st || videoStatus(v) === st))
+      .sort(compareVideos);
+    const shownImages = images
+      .filter((i) => (!q || i.filename.toLowerCase().includes(q)) && (!st || i.status === st))
+      .sort(compareImages);
+    if (shownVideos.length === 0 && shownImages.length === 0) {
+      content.innerHTML = `<div class="dropzone"><div>Nothing matches your search.</div></div>`;
       return;
     }
-    content.innerHTML = `<div class="grid">${list.map(card).join('')}</div>`;
-  }
-
-  function card(i: ImageSummary): string {
-    const mine = i.owner_id === account.currentUser()?.id;
-    const shareBtn =
-      mine && library.canShare
-        ? `<button class="${i.shared ? 'on' : ''}" data-act="share" title="${
-            i.shared ? 'Shared with everyone signed in. Click to make private.' : 'Private. Click to share with everyone signed in.'
-          }">${icon('share')}</button>`
-        : '';
-    const deleteBtn = mine ? `<button data-act="delete" title="Delete this image and its annotations">${icon('trash')}</button>` : '';
-    const owner = !mine
-      ? `<span class="pill info plain">${icon('users')} ${escapeHtml(i.owner_name ?? 'Someone')}</span>`
-      : i.shared
-        ? `<span class="pill info plain">${icon('share')} Shared</span>`
-        : '';
-    return /* html */ `
-      <article class="card" data-id="${i.id}" tabindex="0" title="Open ${escapeHtml(i.filename)}">
-        <div class="thumb" style="background-image: url('${i.thumbUrl}')"></div>
-        <div class="actions">${shareBtn}${deleteBtn}</div>
-        <div class="meta">
-          <div class="title">${escapeHtml(i.filename)}</div>
-          <div class="row">
-            <span class="pill ${STATUS_CLASS[i.status]}">${STATUS_LABEL[i.status]}</span>
-            <span>${i.cellCount} cell${i.cellCount === 1 ? '' : 's'}</span>
-            ${owner}
-          </div>
-        </div>
-      </article>`;
+    const section = (title: string, cards: string) =>
+      `${title ? `<h2 class="section-title">${title}</h2>` : ''}<div class="grid">${cards}</div>`;
+    content.innerHTML =
+      (shownVideos.length ? section('Videos', shownVideos.map((v) => videoCard(v, { mine: mine(v.owner_id) })).join('')) : '') +
+      (shownImages.length
+        ? section(
+            shownVideos.length ? 'Images' : '',
+            shownImages.map((i) => imageCard(i, { mine: mine(i.owner_id), canShare: library.canShare })).join(''),
+          )
+        : '');
   }
 
   // ---------- upload ----------
   async function upload(files: File[]): Promise<void> {
-    const images = files.filter((f) => f.type.startsWith('image/'));
-    if (images.length === 0) return;
+    const videoFiles = files.filter(isVideo);
+    const imageFiles = files.filter((f) => !isVideo(f) && f.type.startsWith('image/'));
     const progress = ref('progress');
     let added = 0;
     let dupes = 0;
-    for (let k = 0; k < images.length; k++) {
-      progress.textContent = `Adding ${k + 1} of ${images.length}…`;
+    for (let k = 0; k < imageFiles.length; k++) {
+      progress.textContent = `Adding ${k + 1} of ${imageFiles.length}…`;
       try {
-        const res = await library.addImage(await prepareImage(images[k]));
+        const res = await library.addImage(await prepareImage(imageFiles[k]));
         if (res === 'duplicate') dupes++;
         else added++;
       } catch (e) {
@@ -187,8 +168,16 @@ export function mountLibraryScreen(root: HTMLElement, { library, account, auth }
     progress.textContent = '';
     if (added) toast(`Added ${added} image${added === 1 ? '' : 's'}.`);
     if (dupes) toast(`${dupes} image${dupes === 1 ? ' was' : 's were'} already in your library.`);
+    let lastVideo: string | null = null;
+    for (const f of videoFiles) {
+      if (signal.aborted) return;
+      const video = await pickFrames(f, library);
+      if (video) lastVideo = video.id;
+    }
     if (scope !== 'mine') scope = 'mine';
-    await load();
+    // One video: go straight to its frames. Otherwise stay on the library.
+    if (videoFiles.length === 1 && lastVideo && imageFiles.length === 0) location.hash = `#/video/${lastVideo}`;
+    else await load();
   }
 
   ref('upload').addEventListener('click', () => fileInput.click());
@@ -213,7 +202,12 @@ export function mountLibraryScreen(root: HTMLElement, { library, account, auth }
       fileInput.click();
       return;
     }
-    const cardEl = target.closest<HTMLElement>('.card');
+    const videoEl = target.closest<HTMLElement>('.card[data-video]');
+    if (videoEl) {
+      location.hash = `#/video/${videoEl.dataset.video}`;
+      return;
+    }
+    const cardEl = target.closest<HTMLElement>('.card[data-id]');
     if (!cardEl) return;
     const img = images.find((i) => i.id === cardEl.dataset.id)!;
     if (target.closest('[data-act="delete"]')) {
@@ -240,7 +234,8 @@ export function mountLibraryScreen(root: HTMLElement, { library, account, auth }
   });
   content.addEventListener('keydown', (e) => {
     const cardEl = (e.target as HTMLElement).closest<HTMLElement>('.card');
-    if (cardEl && e.key === 'Enter') location.hash = `#/image/${cardEl.dataset.id}`;
+    if (!cardEl || e.key !== 'Enter') return;
+    location.hash = cardEl.dataset.video ? `#/video/${cardEl.dataset.video}` : `#/image/${cardEl.dataset.id}`;
   });
 
   scopeSwitch.addEventListener('click', (e) => {
@@ -255,8 +250,4 @@ export function mountLibraryScreen(root: HTMLElement, { library, account, auth }
 
   void load();
   return () => abort.abort();
-}
-
-export function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }

@@ -4,8 +4,21 @@
 
 import { createClient, type SupabaseClient, type User as AuthUser } from '@supabase/supabase-js';
 import type { AnnotationDoc, ImageStatus } from '../io/schema';
-import type { Account, Auth, ImageRecord, ImageSummary, LibraryScope, LibraryStore, PreparedImage, User } from './store';
-import { compareImages } from './store';
+import type {
+  Account,
+  Auth,
+  ImageRecord,
+  ImageSummary,
+  LibraryScope,
+  LibraryStore,
+  PreparedImage,
+  PreparedVideo,
+  User,
+  VideoChange,
+  VideoRecord,
+  VideoSummary,
+} from './store';
+import { compareImages, compareVideos } from './store';
 
 const BUCKET = 'images';
 const SIGNED_URL_SECONDS = 60 * 60;
@@ -30,6 +43,18 @@ interface ImageRow {
   thumb_path: string;
   shared: boolean;
   created_at: string;
+  /** Video frame columns (migration 0002); absent on databases without it. */
+  video_id?: string | null;
+  frame_index?: number | null;
+  frame_time?: number | null;
+}
+
+interface VideoRow extends PreparedVideo {
+  id: string;
+  owner_id: string;
+  owner_name: string | null;
+  shared: boolean;
+  created_at: string;
 }
 
 function toRecord(r: ImageRow): ImageRecord {
@@ -44,8 +69,20 @@ function toRecord(r: ImageRow): ImageRecord {
     sha256: r.sha256,
     shared: r.shared,
     created: r.created_at,
+    frame: r.video_id ? { video_id: r.video_id, index: r.frame_index ?? 0, time: r.frame_time ?? 0 } : null,
   };
 }
+
+function toVideo({ created_at, ...r }: VideoRow): VideoRecord {
+  return { ...r, created: created_at };
+}
+
+/** The table doesn't exist yet: the project hasn't run migration 0002 (videos). */
+function missingTable(error: { code?: string; message: string }): boolean {
+  return error.code === 'PGRST205' || error.code === '42P01' || /could not find the table|does not exist/i.test(error.message);
+}
+const NEEDS_VIDEO_MIGRATION =
+  'Videos need a database update: run supabase/migrations/0002_videos.sql in the Supabase SQL editor (see the README).';
 
 function toUser(u: AuthUser | null | undefined): User | null {
   if (!u) return null;
@@ -207,8 +244,19 @@ export class SupabaseStore implements LibraryStore, Account, Auth {
     const uid = this.uid();
     let q = this.sb.from('images').select('*');
     q = scope === 'mine' ? q.eq('owner_id', uid) : q.neq('owner_id', uid).eq('shared', true);
-    const rows = check(await q) as ImageRow[];
+    // Frames are listed with their video. Filtered here rather than in the query
+    // so the library keeps working on a database without migration 0002.
+    return this.summarize((check(await q) as ImageRow[]).filter((r) => !r.video_id));
+  }
+
+  async listFrames(videoId: string): Promise<ImageSummary[]> {
+    return this.summarize(check(await this.sb.from('images').select('*').eq('video_id', videoId)) as ImageRow[]);
+  }
+
+  /** Image rows with the current user's progress and signed thumbnail URLs. */
+  private async summarize(rows: ImageRow[]): Promise<ImageSummary[]> {
     if (rows.length === 0) return [];
+    const uid = this.uid();
 
     const ids = rows.map((r) => r.id);
     const notes = check(
@@ -264,6 +312,8 @@ export class SupabaseStore implements LibraryStore, Account, Auth {
             sha256: img.sha256,
             storage_path,
             thumb_path,
+            // Frames inherit their video's sharing (a database trigger sets `shared`).
+            ...(img.frame ? { video_id: img.frame.video_id, frame_index: img.frame.index, frame_time: img.frame.time } : {}),
           })
           .select()
           .single(),
@@ -288,6 +338,71 @@ export class SupabaseStore implements LibraryStore, Account, Auth {
 
   async setShared(id: string, shared: boolean): Promise<void> {
     check(await this.sb.from('images').update({ shared }).eq('id', id));
+  }
+
+  // ---------- videos ----------
+
+  async listVideos(scope: LibraryScope): Promise<VideoSummary[]> {
+    const uid = this.uid();
+    let q = this.sb.from('videos').select('*');
+    q = scope === 'mine' ? q.eq('owner_id', uid) : q.neq('owner_id', uid).eq('shared', true);
+    const res = await q;
+    if (res.error) {
+      if (missingTable(res.error)) return []; // no videos before migration 0002
+      throw new Error(res.error.message);
+    }
+    const videos = (res.data as VideoRow[]).map(toVideo);
+    if (videos.length === 0) return [];
+    const frameRows = check(await this.sb.from('images').select('*').in('video_id', videos.map((v) => v.id))) as ImageRow[];
+    const frames = await this.summarize(frameRows);
+    return videos
+      .map((v) => {
+        const mine = frames.filter((f) => f.frame?.video_id === v.id);
+        return { ...v, thumbUrl: mine[0]?.thumbUrl ?? '', frames: mine.length, started: mine.filter((f) => f.status !== 'not_started').length, done: mine.filter((f) => f.status === 'done').length };
+      })
+      .sort(compareVideos);
+  }
+
+  async getVideo(id: string): Promise<VideoRecord> {
+    const res = await this.sb.from('videos').select('*').eq('id', id).maybeSingle();
+    if (res.error) throw new Error(missingTable(res.error) ? NEEDS_VIDEO_MIGRATION : res.error.message);
+    if (!res.data) throw new Error('This video does not exist or is no longer shared with you.');
+    return toVideo(res.data as VideoRow);
+  }
+
+  async findVideo(sha256: string): Promise<VideoRecord | null> {
+    const res = await this.sb.from('videos').select('*').eq('owner_id', this.uid()).eq('sha256', sha256).maybeSingle();
+    if (res.error) throw new Error(missingTable(res.error) ? NEEDS_VIDEO_MIGRATION : res.error.message);
+    return res.data ? toVideo(res.data as VideoRow) : null;
+  }
+
+  async addVideo(video: PreparedVideo): Promise<VideoRecord> {
+    const res = await this.sb
+      .from('videos')
+      .insert({ ...video, owner_id: this.uid(), owner_name: this.user?.displayName ?? this.user?.email ?? null })
+      .select()
+      .single();
+    if (res.error) throw new Error(missingTable(res.error) ? NEEDS_VIDEO_MIGRATION : res.error.message);
+    return toVideo(res.data as VideoRow);
+  }
+
+  async updateVideo(id: string, change: VideoChange): Promise<void> {
+    check(await this.sb.from('videos').update(change).eq('id', id));
+  }
+
+  async deleteVideo(id: string): Promise<void> {
+    const files = check(await this.sb.from('images').select('storage_path, thumb_path').eq('video_id', id)) as Pick<
+      ImageRow,
+      'storage_path' | 'thumb_path'
+    >[];
+    // Deleting the video deletes its frames and their annotations (on delete cascade).
+    check(await this.sb.from('videos').delete().eq('id', id));
+    if (files.length) check(await this.sb.storage.from(BUCKET).remove(files.flatMap((f) => [f.storage_path, f.thumb_path])));
+  }
+
+  async setVideoShared(id: string, shared: boolean): Promise<void> {
+    // A database trigger shares or unshares the video's frames with it.
+    check(await this.sb.from('videos').update({ shared }).eq('id', id));
   }
 
   // ---------- annotations ----------

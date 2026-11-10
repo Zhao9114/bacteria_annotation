@@ -123,6 +123,8 @@ Without the env vars everything works offline in one browser, which is handy for
    - the `images` and `annotations` tables;
    - row-level security policies;
    - a private `images` storage bucket.
+
+   Then do the same with [supabase/migrations/0002_videos.sql](supabase/migrations/0002_videos.sql), which adds video support: a `videos` table, frame columns on `images`, and triggers that share a video's frames together with the video. Existing images and annotations are not changed. **Projects set up before videos existed need this step once**; until then the app works as before, and adding a video says the update is missing.
 3. **Authentication → Sign In / Providers → Email:** make sure it is enabled.
    - **Confirm email** on (the default): new accounts must click a confirmation link before signing in.
    - **Confirm email** off: people can sign in straight after creating an account, and no sign-up emails are sent. This is simpler for a class, but anyone with the app link can create an account with any address.

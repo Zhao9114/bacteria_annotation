@@ -15,6 +15,7 @@ import { compareImages, type Backend, type ImageSummary } from '../storage/store
 import { icon } from '../ui/icons';
 import { mountCellPanel, mountDisplayControls, mountMeasurementControls } from '../ui/sidebar';
 import { toast } from '../ui/toast';
+import { formatTime } from '../video/frames';
 import { annotatorName, mountUserMenu } from '../ui/user';
 
 /**
@@ -39,9 +40,11 @@ const TEMPLATE = /* html */ `
 <div class="app">
   <header class="topbar">
     <a class="brand" href="#/library"><span class="logo">${icon('logo')}</span><span class="brand-text">Cell Annotator</span></a>
-    <a class="back-link" href="#/library" title="Back to the library">${icon('chevronLeft')}</a>
+    <a class="back-link" href="#/library" title="Back to the library" data-ref="backLink">${icon('chevronLeft')}</a>
     <nav class="crumbs">
-      <span>/</span><a href="#/library">Library</a><span>/</span><span class="current" data-ref="crumbFile">Loading…</span>
+      <span>/</span><a href="#/library">Library</a><span>/</span>
+      <span class="hidden" data-ref="crumbVideo"><a data-ref="crumbVideoLink"></a><span>/</span></span>
+      <span class="current" data-ref="crumbFile">Loading…</span>
     </nav>
     <span class="spacer"></span>
     <span class="hidden" data-ref="savePill"></span>
@@ -189,8 +192,23 @@ function mountEditor(
   if (!ctx) throw new Error('2D canvas not supported');
   const toolbar = ref('toolbar');
   const crumbFile = ref('crumbFile');
-  crumbFile.textContent = image.filename;
+  const frame = file.record.frame;
+  crumbFile.textContent = frame ? `Frame ${frame.index} · ${formatTime(frame.time)}` : image.filename;
   crumbFile.title = `${image.filename} (${image.width} × ${image.height} px)`;
+  if (frame) {
+    // A video frame: the crumb and the back arrow lead to its video.
+    const videoHref = `#/video/${frame.video_id}`;
+    ref<HTMLAnchorElement>('crumbVideoLink').href = videoHref;
+    ref<HTMLAnchorElement>('backLink').href = videoHref;
+    ref('backLink').title = 'Back to the video';
+    void library.getVideo(frame.video_id).then(
+      (v) => {
+        ref('crumbVideoLink').textContent = v.phone || v.filename;
+        ref('crumbVideo').classList.remove('hidden');
+      },
+      () => {},
+    );
+  }
   ref('emptyHint').classList.add('hidden');
   toolbar.classList.remove('hidden');
 
@@ -342,10 +360,11 @@ function mountEditor(
   });
 
   let neighbours: ImageSummary[] = [];
+  /** Previous / next: the video's frames in frame order, or the library's images. */
   async function loadNeighbours(): Promise<void> {
     const scope = file.record.owner_id === account.currentUser()?.id ? 'mine' : 'shared';
     try {
-      neighbours = (await library.listImages(scope)).sort(compareImages);
+      neighbours = frame ? await library.listFrames(frame.video_id) : (await library.listImages(scope)).sort(compareImages);
     } catch {
       neighbours = [];
     }

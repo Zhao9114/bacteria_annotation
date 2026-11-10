@@ -1,6 +1,7 @@
 import './styles.css';
 import { mountAnnotateScreen } from './screens/annotate';
 import { mountLibraryScreen } from './screens/library';
+import { mountVideoScreen } from './screens/video';
 import { mountSignInScreen } from './screens/signin';
 import { createBackend } from './storage';
 import type { Backend } from './storage/store';
@@ -29,7 +30,9 @@ function route(backend: Backend): void {
     return;
   }
   const image = /^#\/image\/([\w-]+)$/.exec(location.hash);
+  const video = /^#\/video\/([\w-]+)$/.exec(location.hash);
   if (image) cleanup = mountAnnotateScreen(app, backend, image[1]);
+  else if (video) cleanup = mountVideoScreen(app, backend, video[1]);
   else {
     if (location.hash !== '#/library') history.replaceState(null, '', '#/library');
     cleanup = mountLibraryScreen(app, backend);

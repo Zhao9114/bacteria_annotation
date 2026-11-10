@@ -6,3 +6,6 @@ dist/
 .env.local
 .env.*.local
 .vercel/
+
+# Videos shared with us for testing (not ours to publish)
+/video/

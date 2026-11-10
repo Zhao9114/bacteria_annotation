@@ -18,6 +18,7 @@
     "vitest": "^5.0.5"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.118.0"
+    "@supabase/supabase-js": "^2.118.0",
+    "mp4box": "2.5.0"
   }
 }

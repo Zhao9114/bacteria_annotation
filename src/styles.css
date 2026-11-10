@@ -1193,3 +1193,313 @@ summary,
     max-width: none;
   }
 }
+
+/* ---------- videos: library cards, video page, frame picker ---------- */
+.section-title {
+  margin: 22px 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.section-title:first-child {
+  margin-top: 4px;
+}
+.video-card .thumb {
+  position: relative;
+}
+.film-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--glass);
+  backdrop-filter: blur(8px);
+}
+.film-badge .icon {
+  width: 13px;
+  height: 13px;
+}
+.video-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.video-actions button.on {
+  color: var(--success);
+}
+.video-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 16px;
+  margin-bottom: 18px;
+}
+.video-details label,
+.picker-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.video-details input[type='text'],
+.picker-fields input[type='text'] {
+  width: 220px;
+}
+.video-details input[type='number'],
+.picker-fields input[type='number'] {
+  width: 130px;
+}
+.video-details .muted {
+  padding-bottom: 8px;
+  font-size: 12px;
+}
+
+.picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(5, 6, 9, 0.72);
+}
+.picker {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow: hidden;
+  background: var(--surface);
+}
+.picker-head,
+.picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.picker-foot {
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+}
+.picker-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: var(--accent-hover);
+  background: var(--accent-soft);
+}
+.picker-title {
+  flex: 1;
+  min-width: 0;
+}
+.picker-title h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.picker-title .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.picker-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 48px 24px;
+  color: var(--text-2);
+}
+.picker-loading.error {
+  color: var(--danger);
+}
+.picker-loading.error .progress {
+  display: none;
+}
+.progress {
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-3);
+}
+.progress > div {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s;
+}
+.picker-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 18px;
+  overflow: auto;
+}
+.picker-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 16px;
+}
+.picker-info {
+  padding-bottom: 8px;
+  font-size: 12px;
+}
+.picker-note {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--success);
+  background: var(--success-soft);
+}
+.picker-preview {
+  position: relative;
+  flex: none;
+  /* Whatever room the controls around it leave, so the strip stays in view. */
+  height: clamp(180px, calc(100dvh - 610px), 560px);
+  border-radius: var(--radius);
+  background: #07080a;
+  overflow: hidden;
+}
+.picker-preview canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.picker-caption,
+.picker-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+.picker-suggest input {
+  width: 64px;
+}
+.picker-timeline,
+.picker-strip,
+.picker-legend,
+.picker-suggest,
+.picker-caption,
+.picker-fields {
+  flex: none;
+}
+.picker-timeline canvas {
+  display: block;
+  width: 100%;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+  touch-action: none;
+}
+.picker-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: -6px;
+  font-size: 12px;
+}
+.swatch-line {
+  display: inline-block;
+  width: 3px;
+  height: 12px;
+  margin-left: 8px;
+  border-radius: 2px;
+}
+.swatch-line:first-child {
+  margin-left: 0;
+}
+.swatch-line.sel {
+  background: #8b95ff;
+}
+.swatch-line.saved {
+  background: #3ccf8e;
+}
+.swatch-line.bars {
+  width: 8px;
+  background: rgba(160, 172, 205, 0.55);
+}
+.picker-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.strip-item {
+  position: relative;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.strip-item.current {
+  border-color: var(--accent);
+}
+.strip-view {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  font-size: 11px;
+  border: 0;
+  background: none;
+}
+.strip-thumb {
+  display: block;
+  width: 96px;
+  height: 96px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #07080a;
+}
+.strip-thumb canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.strip-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-height: 24px !important;
+  width: 24px !important;
+  background: var(--glass) !important;
+}
+
+@media (max-width: 600px) {
+  .picker-backdrop {
+    padding: 0;
+  }
+  .picker {
+    max-height: 100dvh;
+    height: 100dvh;
+    border-radius: 0;
+  }
+  .picker-preview {
+    height: 36dvh;
+  }
+  .video-details input[type='text'],
+  .picker-fields input[type='text'] {
+    width: 100%;
+  }
+  .video-actions {
+    width: 100%;
+  }
+}

@@ -2,7 +2,7 @@
 // size, hash it (duplicate detection, matching NN predictions later), and make
 // a small thumbnail for the library grid.
 
-import type { PreparedImage } from './store';
+import type { FrameSource, PreparedImage } from './store';
 
 export const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'];
 const THUMB_SIZE = 320;
@@ -16,11 +16,20 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
   if (!ACCEPTED_TYPES.includes(file.type)) {
     throw new Error(`"${file.name}" is not a supported image. Please use PNG, JPEG, WebP, BMP or GIF.`);
   }
+  return prepare(file, file.name, file.type, null);
+}
+
+/** A frame picked from a video, already encoded as PNG. */
+export function prepareFrame(png: Blob, filename: string, frame: FrameSource): Promise<PreparedImage> {
+  return prepare(png, filename, 'image/png', frame);
+}
+
+async function prepare(file: Blob, filename: string, mime: string, frame: FrameSource | null): Promise<PreparedImage> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file);
   } catch {
-    throw new Error(`Could not open "${file.name}". The file may be damaged.`);
+    throw new Error(`Could not open "${filename}". The file may be damaged.`);
   }
   const { width, height } = bitmap;
   const k = Math.min(1, THUMB_SIZE / Math.max(width, height));
@@ -32,5 +41,5 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
   const thumb = await new Promise<Blob>((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Thumbnail failed'))), 'image/jpeg', 0.82),
   );
-  return { file, filename: file.name, mime: file.type, width, height, sha256: await sha256Hex(file), thumb };
+  return { file, filename, mime, width, height, sha256: await sha256Hex(file), thumb, frame };
 }
