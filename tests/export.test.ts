@@ -3,7 +3,7 @@ import { toDoc } from '../src/io/annotation';
 import { gatherExport, toCsv, toJson, type ExportItem } from '../src/io/export';
 import type { Cell } from '../src/io/schema';
 import { DEFAULT_MEASUREMENT_SETTINGS, measureCell } from '../src/measure/measure';
-import type { ImageRecord, VideoRecord } from '../src/storage/store';
+import type { FrameSource, ImageRecord, VideoRecord } from '../src/storage/store';
 import { circle } from './fixtures';
 import { MemoryLibrary } from './memory-library';
 
@@ -13,6 +13,9 @@ function cell(id: number, note = ''): Cell {
   return { id, outer, inner, flags: ['unsure'], note, draw_mode: 'points', measurements: measureCell(outer, inner, DEFAULT_MEASUREMENT_SETTINGS) };
 }
 
+const frame = (video_id: string, index: number, time: number): FrameSource => ({
+  video_id, index, time, picked_by: 'random', sharpness: 12.5, sharpness_pct: 40,
+});
 const image = (over: Partial<ImageRecord> = {}): ImageRecord => ({
   id: 'i1', owner_id: 'me', owner_name: null, filename: 'cell3.png', mime: 'image/png', width: 640, height: 400,
   sha256: 'abc', shared: false, created: '', frame: null, ...over,
@@ -28,7 +31,7 @@ describe('CSV export', () => {
   it('has one row per cell with its source and measurements', () => {
     const items: ExportItem[] = [
       { image: image(), video: null, doc: doc([cell(1), cell(2)]) },
-      { image: image({ id: 'f', filename: 'iPhone 14 Pro · frame 312.png', frame: { video_id: 'v1', index: 312, time: 10.4 } }), video, doc: doc([cell(7)]) },
+      { image: image({ id: 'f', filename: 'iPhone 14 Pro · frame 312.png', frame: frame('v1', 312, 10.4) }), video, doc: doc([cell(7)]) },
       { image: image({ id: 'empty' }), video: null, doc: null },
     ];
     const lines = toCsv(items).trimEnd().split('\r\n');
@@ -36,7 +39,10 @@ describe('CSV export', () => {
     expect(lines).toHaveLength(4); // header + 3 cells; the unannotated image adds none
     const row = (k: number) => Object.fromEntries(header.map((h, i) => [h, lines[k].split(',')[i]]));
     expect(row(1)).toMatchObject({ source: 'image', phone: '', image_file: 'cell3.png', cell_id: '1', annotator: 'Dr. Smith', status: 'done' });
-    expect(row(3)).toMatchObject({ source: 'video frame', phone: 'iPhone 14 Pro', sensor_pixel_size_um: '2.44', frame_index: '312', frame_time_s: '10.4', cell_id: '7' });
+    expect(row(3)).toMatchObject({
+      source: 'video frame', phone: 'iPhone 14 Pro', sensor_pixel_size_um: '2.44', frame_index: '312', frame_time_s: '10.4',
+      frame_picked_by: 'random', frame_sharpness: '12.5', frame_sharpness_pct: '40', cell_id: '7',
+    });
     expect(Number(row(1).gap_median_px)).toBeCloseTo(cell(1).measurements.gap_median!, 5);
   });
 
@@ -50,12 +56,12 @@ describe('CSV export', () => {
 describe('JSON export', () => {
   it('includes outlines, frame and video details', () => {
     const json = JSON.parse(
-      toJson([{ image: image({ frame: { video_id: 'v1', index: 5, time: 0.2 } }), video, doc: doc([cell(1)]) }], '2026-11-09T00:00:00Z'),
+      toJson([{ image: image({ frame: frame('v1', 5, 0.2) }), video, doc: doc([cell(1)]) }], '2026-11-09T00:00:00Z'),
     );
     expect(json.exported_at).toBe('2026-11-09T00:00:00Z');
     const [item] = json.items;
     expect(item.video).toMatchObject({ phone: 'iPhone 14 Pro', sensor_pixel_size_um: 2.44, fps: 30 });
-    expect(item.frame).toEqual({ index: 5, time_s: 0.2 });
+    expect(item.frame).toEqual({ index: 5, time_s: 0.2, picked_by: 'random', sharpness: 12.5, sharpness_pct: 40 });
     expect(item.annotation.cells[0].outer).toHaveLength(40);
   });
 });
@@ -64,8 +70,8 @@ describe('gathering', () => {
   it('collects a video’s frames in order with the current user’s annotations', async () => {
     const lib = new MemoryLibrary();
     const v = await lib.addVideo({ ...video });
-    lib.addRecord('b', 'f20.png', { video_id: v.id, index: 20, time: 0.7 });
-    lib.addRecord('a', 'f3.png', { video_id: v.id, index: 3, time: 0.1 });
+    lib.addRecord('b', 'f20.png', frame(v.id, 20, 0.7));
+    lib.addRecord('a', 'f3.png', frame(v.id, 3, 0.1));
     lib.addRecord('img', 'cell3.png');
     await lib.saveAnnotation('a', doc([cell(1)]));
     const items = await gatherExport(lib, { videoId: v.id });

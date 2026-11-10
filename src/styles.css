@@ -1390,6 +1390,14 @@ summary,
 .picker-suggest input {
   width: 64px;
 }
+.picker-suggest select {
+  width: auto;
+}
+.picker-method-note {
+  flex: none;
+  margin-top: -4px;
+  font-size: 12px;
+}
 .picker-timeline,
 .picker-strip,
 .picker-legend,

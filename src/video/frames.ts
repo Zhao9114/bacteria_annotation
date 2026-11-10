@@ -1,6 +1,11 @@
 // Choosing which frames of a video to annotate: a sharpness score per frame,
-// suggestions spread across the clip, and names guessed from the file name.
+// picks spread across the clip, and names guessed from the file name.
 // Pure functions; the browser-side decoding lives in clip.ts.
+
+import type { FramePick } from '../storage/store';
+
+/** How frames are picked automatically (a frame added by hand is 'manual'). */
+export type PickMethod = Exclude<FramePick, 'manual'>;
 
 /** Luma of RGBA pixels (BT.601), one byte per pixel. */
 export function toGray(rgba: Uint8ClampedArray | Uint8Array, width: number, height: number): Uint8Array {
@@ -37,25 +42,71 @@ export function sharpness(gray: Uint8Array, width: number, height: number): numb
 }
 
 /**
- * The sharpest frame in each of `count` equal stretches of the clip, so the
- * suggestions cover the whole video and are never near-duplicates.
+ * One frame from each of `count` equal stretches of the clip, so picks cover
+ * the whole video and are never near-duplicates:
+ *   random   - a random frame of each stretch; unbiased, so suited to ground
+ *              truth. Reproducible: the same `seed` gives the same frames.
+ *   even     - the middle frame of each stretch.
+ *   sharpest - the sharpest frame of each stretch; easiest to annotate but
+ *              better than a typical frame.
  * Returns frame indices in increasing order; frames in `exclude` (already
- * saved) are never suggested.
+ * saved) are never picked.
  */
-export function suggestFrames(scores: ArrayLike<number>, count: number, exclude: ReadonlySet<number> = new Set()): number[] {
+export function pickFrames(
+  scores: ArrayLike<number>,
+  count: number,
+  method: PickMethod,
+  seed: string,
+  exclude: ReadonlySet<number> = new Set(),
+): number[] {
   const n = scores.length;
   const k = Math.max(0, Math.min(Math.round(count), n));
+  const random = mulberry32(hashString(`${seed}:${k}`));
   const picks: number[] = [];
   for (let w = 0; w < k; w++) {
     const start = Math.floor((w * n) / k);
     const end = Math.floor(((w + 1) * n) / k);
-    let best = -1;
-    for (let i = start; i < end; i++) {
-      if (!exclude.has(i) && (best < 0 || scores[i] > scores[best])) best = i;
+    const open: number[] = [];
+    for (let i = start; i < end; i++) if (!exclude.has(i)) open.push(i);
+    if (open.length === 0) continue;
+    if (method === 'sharpest') picks.push(open.reduce((best, i) => (scores[i] > scores[best] ? i : best)));
+    else if (method === 'random') picks.push(open[Math.floor(random() * open.length)]);
+    else {
+      const middle = (start + end - 1) / 2;
+      picks.push(open.reduce((best, i) => (Math.abs(i - middle) < Math.abs(best - middle) ? i : best)));
     }
-    if (best >= 0) picks.push(best);
   }
   return picks;
+}
+
+/** Percentile (0–100) of `score` among `sorted` (ascending): the share of frames less sharp. */
+export function percentRank(sorted: ArrayLike<number>, score: number): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] < score) lo = mid + 1;
+    else hi = mid;
+  }
+  return sorted.length > 1 ? (100 * lo) / (sorted.length - 1) : 100;
+}
+
+/** FNV-1a: a stable 32-bit seed from a string. */
+function hashString(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return h >>> 0;
+}
+
+/** Small seeded PRNG, uniform on [0, 1). */
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 /**

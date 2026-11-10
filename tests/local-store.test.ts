@@ -26,6 +26,10 @@ function prepared(filename: string, sha256: string, frame: FrameSource | null = 
   };
 }
 
+const frame = (video_id: string, index: number, time: number): FrameSource => ({
+  video_id, index, time, picked_by: 'random', sharpness: 10, sharpness_pct: 50,
+});
+
 const video: PreparedVideo = {
   filename: 'iPhone 14 Pro.mp4',
   sha256: 'video-sha',
@@ -86,8 +90,8 @@ describe('LocalStore', () => {
   it('keeps video frames out of the image list and lists them per video in frame order', async () => {
     await store.addImage(prepared('a.png', 'x'));
     const v = await store.addVideo(video);
-    await store.addImage(prepared('f312.png', 'f312', { video_id: v.id, index: 312, time: 10.4 }));
-    await store.addImage(prepared('f45.png', 'f45', { video_id: v.id, index: 45, time: 1.5 }));
+    await store.addImage(prepared('f312.png', 'f312', frame(v.id, 312, 10.4)));
+    await store.addImage(prepared('f45.png', 'f45', frame(v.id, 45, 1.5)));
     expect((await store.listImages('mine')).map((i) => i.filename)).toEqual(['a.png']);
     expect((await store.listFrames(v.id)).map((f) => f.frame?.index)).toEqual([45, 312]);
     const [summary] = await store.listVideos('mine');
@@ -97,7 +101,7 @@ describe('LocalStore', () => {
 
   it('counts frames marked done, finds a video again by its hash, and edits it', async () => {
     const v = await store.addVideo(video);
-    const f = (await store.addImage(prepared('f1.png', 'f1', { video_id: v.id, index: 1, time: 0 }))) as { id: string };
+    const f = (await store.addImage(prepared('f1.png', 'f1', frame(v.id, 1, 0)))) as { id: string };
     const doc = toDoc(
       { cells: [], status: 'done', measurement: DEFAULT_MEASUREMENT_SETTINGS },
       { filename: 'f1.png', sha256: 'f1', width: 320, height: 568 },
@@ -114,7 +118,7 @@ describe('LocalStore', () => {
 
   it('deleting a video deletes its frames and their annotations', async () => {
     const v = await store.addVideo(video);
-    const f = (await store.addImage(prepared('f1.png', 'f1', { video_id: v.id, index: 1, time: 0 }))) as { id: string };
+    const f = (await store.addImage(prepared('f1.png', 'f1', frame(v.id, 1, 0)))) as { id: string };
     await store.deleteVideo(v.id);
     expect(await store.listVideos('mine')).toEqual([]);
     expect(await store.listFrames(v.id)).toEqual([]);
@@ -142,6 +146,13 @@ describe('LocalStore', () => {
     const old = await LocalStore.open(name);
     expect((await old.listImages('mine')).map((i) => [i.filename, i.frame])).toEqual([['old.png', null]]);
     expect(await old.listVideos('mine')).toEqual([]);
+    // A frame saved before picks were recorded reads back with empty pick details.
+    const v = await old.addVideo(video);
+    const tx = (old as unknown as { db: IDBDatabase }).db.transaction('images', 'readwrite');
+    tx.objectStore('images').add({ id: 'f-old', filename: 'f.png', sha256: 'fo', width: 1, height: 1, blob: new Blob(['x']),
+      frame: { video_id: v.id, index: 4, time: 0.13 } });
+    await new Promise((r) => (tx.oncomplete = r));
+    expect((await old.listFrames(v.id))[0].frame).toEqual({ video_id: v.id, index: 4, time: 0.13, picked_by: null, sharpness: null, sharpness_pct: null });
   });
 
   it('the local account remembers the annotator name and announces changes', async () => {

@@ -7,6 +7,7 @@ import type { AnnotationDoc, ImageStatus } from '../io/schema';
 import type {
   Account,
   Auth,
+  FramePick,
   ImageRecord,
   ImageSummary,
   LibraryScope,
@@ -47,6 +48,10 @@ interface ImageRow {
   video_id?: string | null;
   frame_index?: number | null;
   frame_time?: number | null;
+  /** How the frame was chosen and its sharpness (migration 0003). */
+  frame_picked_by?: FramePick | null;
+  frame_sharpness?: number | null;
+  frame_sharpness_pct?: number | null;
 }
 
 interface VideoRow extends PreparedVideo {
@@ -69,7 +74,16 @@ function toRecord(r: ImageRow): ImageRecord {
     sha256: r.sha256,
     shared: r.shared,
     created: r.created_at,
-    frame: r.video_id ? { video_id: r.video_id, index: r.frame_index ?? 0, time: r.frame_time ?? 0 } : null,
+    frame: r.video_id
+      ? {
+          video_id: r.video_id,
+          index: r.frame_index ?? 0,
+          time: r.frame_time ?? 0,
+          picked_by: r.frame_picked_by ?? null,
+          sharpness: r.frame_sharpness ?? null,
+          sharpness_pct: r.frame_sharpness_pct ?? null,
+        }
+      : null,
   };
 }
 
@@ -81,8 +95,13 @@ function toVideo({ created_at, ...r }: VideoRow): VideoRecord {
 function missingTable(error: { code?: string; message: string }): boolean {
   return error.code === 'PGRST205' || error.code === '42P01' || /could not find the table|does not exist/i.test(error.message);
 }
-const NEEDS_VIDEO_MIGRATION =
-  'Videos need a database update: run supabase/migrations/0002_videos.sql in the Supabase SQL editor (see the README).';
+/** A column doesn't exist yet: the project hasn't run a later migration. */
+function missingColumn(error: { code?: string; message: string }): boolean {
+  return error.code === 'PGRST204' || error.code === '42703' || /could not find the .* column|column .* does not exist/i.test(error.message);
+}
+const needsMigration = (file: string) =>
+  `Videos need a database update: run supabase/migrations/${file} in the Supabase SQL editor (see the README).`;
+const NEEDS_VIDEO_MIGRATION = needsMigration('0002_videos.sql');
 
 function toUser(u: AuthUser | null | undefined): User | null {
   if (!u) return null;
@@ -298,8 +317,7 @@ export class SupabaseStore implements LibraryStore, Account, Auth {
     check(await bucket.upload(storage_path, img.file, { contentType: img.mime }));
     try {
       check(await bucket.upload(thumb_path, img.thumb, { contentType: 'image/jpeg' }));
-      const row = check(
-        await this.sb
+      const res = await this.sb
           .from('images')
           .insert({
             id,
@@ -313,12 +331,23 @@ export class SupabaseStore implements LibraryStore, Account, Auth {
             storage_path,
             thumb_path,
             // Frames inherit their video's sharing (a database trigger sets `shared`).
-            ...(img.frame ? { video_id: img.frame.video_id, frame_index: img.frame.index, frame_time: img.frame.time } : {}),
+            ...(img.frame
+              ? {
+                  video_id: img.frame.video_id,
+                  frame_index: img.frame.index,
+                  frame_time: img.frame.time,
+                  frame_picked_by: img.frame.picked_by,
+                  frame_sharpness: img.frame.sharpness,
+                  frame_sharpness_pct: img.frame.sharpness_pct,
+                }
+              : {}),
           })
           .select()
-          .single(),
-      ) as ImageRow;
-      return toRecord(row);
+          .single();
+      if (res.error) {
+        throw new Error(img.frame && missingColumn(res.error) ? needsMigration('0003_frame_picks.sql') : res.error.message);
+      }
+      return toRecord(res.data as ImageRow);
     } catch (e) {
       // Don't leave orphaned files behind.
       await bucket.remove([storage_path, thumb_path]);

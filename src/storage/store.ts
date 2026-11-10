@@ -12,6 +12,9 @@ export interface User {
   displayName: string | null;
 }
 
+/** How a saved frame was chosen: automatically by one of the pick methods, or by hand. */
+export type FramePick = 'random' | 'even' | 'sharpest' | 'manual';
+
 /** Where an image came from when it is a frame saved from a video. */
 export interface FrameSource {
   video_id: string;
@@ -19,6 +22,12 @@ export interface FrameSource {
   index: number;
   /** Seconds from the start of the video. */
   time: number;
+  /** How it was chosen; null for frames saved before this was recorded. */
+  picked_by: FramePick | null;
+  /** Focus score (variance of the Laplacian); only comparable within the same video. */
+  sharpness: number | null;
+  /** Percentile of that score among the video's frames: 0 = blurriest, 100 = sharpest. */
+  sharpness_pct: number | null;
 }
 
 export interface ImageRecord {

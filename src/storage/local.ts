@@ -5,6 +5,7 @@
 import type { AnnotationDoc } from '../io/schema';
 import type {
   Account,
+  FrameSource,
   ImageRecord,
   ImageSummary,
   LibraryScope,
@@ -270,7 +271,15 @@ export class LocalStore implements LibraryStore {
   }
 }
 
-/** Records saved before videos existed have no `frame` field. */
-function withFrame(record: Omit<ImageRecord, 'frame'> & { frame?: ImageRecord['frame'] }): ImageRecord {
-  return { ...record, frame: record.frame ?? null };
+/**
+ * Records saved before videos existed have no `frame`; frames saved before
+ * picks were recorded have no pick method or sharpness.
+ */
+type StoredFrame = Partial<FrameSource> & Pick<FrameSource, 'video_id' | 'index' | 'time'>;
+function withFrame(record: Omit<ImageRecord, 'frame'> & { frame?: StoredFrame | null }): ImageRecord {
+  const f = record.frame;
+  return {
+    ...record,
+    frame: f ? { picked_by: null, sharpness: null, sharpness_pct: null, ...f } : null,
+  };
 }

@@ -1,16 +1,25 @@
 // Picking frames from a video. Opens over the library: reads the video, scores
-// every frame for sharpness, suggests the sharpest frame in each stretch of the
-// clip, and lets the person change the choice before the chosen frames are
-// saved as images. The video file itself is not stored.
+// every frame for sharpness, picks one frame from each stretch of the clip (at
+// random by default, so ground truth isn't biased towards easy frames), and
+// lets the person change the choice before the chosen frames are saved as
+// images, each with how it was picked and its sharpness. The video file itself
+// is not stored.
 
-import type { LibraryStore, VideoRecord } from '../storage/store';
+import type { FramePick, LibraryStore, VideoRecord } from '../storage/store';
 import { prepareFrame, sha256Hex } from '../storage/upload';
 import { icon } from '../ui/icons';
 import { toast } from '../ui/toast';
 import { VideoClip } from '../video/clip';
-import { formatTime, frameFilename, guessPhone, guessPixelSize, suggestFrames } from '../video/frames';
+import { formatTime, frameFilename, guessPhone, guessPixelSize, percentRank, pickFrames, type PickMethod } from '../video/frames';
 
 const DEFAULT_COUNT = 10;
+const METHOD_KEY = 'framePickMethod';
+const METHOD_NOTE: Record<PickMethod, string> = {
+  random:
+    'Unbiased: typical frames, blurry ones included, so results reflect what the phone really records. Best for ground truth. The same video always gives the same frames.',
+  even: 'The middle frame of each part: regular and reproducible, but not random.',
+  sharpest: 'Easiest to annotate, but better than a typical frame, so a model tested on them will look better than it is.',
+};
 const MAX_COUNT = 30;
 const THUMB_W = 96;
 
@@ -55,11 +64,17 @@ const TEMPLATE = /* html */ `
         <span class="swatch-line bars"></span> sharpness
       </div>
       <div class="picker-suggest">
-        <span>Suggest</span>
+        <span>Pick</span>
         <input type="number" data-ref="count" min="1" max="${MAX_COUNT}" value="${DEFAULT_COUNT}" />
-        <span>frames, the sharpest in each part of the video</span>
-        <button class="ghost" data-ref="suggest">Suggest again</button>
+        <span>frames:</span>
+        <select data-ref="method" title="How frames are chosen from each equal part of the video">
+          <option value="random">a random frame from each part</option>
+          <option value="even">evenly spaced</option>
+          <option value="sharpest">the sharpest in each part</option>
+        </select>
+        <button class="ghost" data-ref="suggest" title="Pick frames again with this number and method">Pick</button>
       </div>
+      <div class="muted picker-method-note" data-ref="methodNote"></div>
       <div class="picker-strip" data-ref="strip"></div>
     </div>
     <footer class="picker-foot">
@@ -129,9 +144,20 @@ export function openFramePicker(file: File, library: LibraryStore): Promise<Vide
     }
 
     const sorted = [...scores].sort((a, b) => a - b);
-    const rankOf = (s: number) => Math.round((100 * sorted.findIndex((x) => x >= s)) / Math.max(1, n - 1));
-    let selected = new Set(suggestFrames(scores, DEFAULT_COUNT, saved));
-    let current = [...selected][0] ?? 0;
+    const methodSelect = ref<HTMLSelectElement>('method');
+    methodSelect.value = loadMethod();
+    /** Chosen frames and how each was chosen. */
+    let selected = new Map<number, FramePick>();
+    function pick(): void {
+      const method = methodSelect.value as PickMethod;
+      const countInput = ref<HTMLInputElement>('count');
+      const count = Math.max(1, Math.min(MAX_COUNT, Math.round(Number(countInput.value) || DEFAULT_COUNT)));
+      countInput.value = String(count);
+      ref('methodNote').textContent = METHOD_NOTE[method];
+      selected = new Map(pickFrames(scores, count, method, sha256, saved).map((i) => [i, method]));
+    }
+    pick();
+    let current = [...selected.keys()][0] ?? 0;
 
     // ---------- timeline ----------
     const timeline = ref<HTMLCanvasElement>('timeline');
@@ -159,7 +185,7 @@ export function openFramePicker(file: File, library: LibraryStore): Promise<Vide
         tctx.fillRect(Math.round(xOf(i) - width / 2), 0, width, h);
       };
       for (const i of saved) mark(i, '#3ccf8e', 2 * dpr);
-      for (const i of selected) {
+      for (const i of selected.keys()) {
         mark(i, '#8b95ff', 2 * dpr);
         tctx.beginPath();
         tctx.moveTo(xOf(i) - 5 * dpr, 0);
@@ -202,7 +228,7 @@ export function openFramePicker(file: File, library: LibraryStore): Promise<Vide
     function updateCaption(): void {
       ref('caption').innerHTML =
         `<b>Frame ${current}</b> · ${formatTime(clip.timeOf(current))} · ` +
-        `sharper than ${rankOf(scores[current])}% of frames`;
+        `sharper than ${Math.round(percentRank(sorted, scores[current]))}% of frames`;
       const toggle = ref<HTMLButtonElement>('toggle');
       toggle.disabled = saved.has(current);
       toggle.className = selected.has(current) ? '' : 'primary';
@@ -230,7 +256,7 @@ export function openFramePicker(file: File, library: LibraryStore): Promise<Vide
     }
     const strip = ref('strip');
     function renderStrip(): void {
-      const list = [...selected].sort((a, b) => a - b);
+      const list = [...selected.keys()].sort((a, b) => a - b);
       strip.innerHTML = list.length
         ? list
             .map(
@@ -242,7 +268,7 @@ export function openFramePicker(file: File, library: LibraryStore): Promise<Vide
               </div>`,
             )
             .join('')
-        : '<div class="muted">No frames chosen. Click the timeline to look at frames, or suggest again.</div>';
+        : '<div class="muted">No frames chosen. Click the timeline to look at frames, or pick frames again.</div>';
       for (const i of list) {
         void thumb(i).then((src) => {
           const slot = strip.querySelector(`.strip-item[data-frame="${i}"] .strip-thumb`);
@@ -286,14 +312,17 @@ export function openFramePicker(file: File, library: LibraryStore): Promise<Vide
     function toggleCurrent(): void {
       if (saved.has(current)) return;
       if (selected.has(current)) selected.delete(current);
-      else selected.add(current);
+      else selected.set(current, 'manual');
       refresh();
     }
     ref('toggle').addEventListener('click', toggleCurrent);
     ref('suggest').addEventListener('click', () => {
-      const count = Math.max(1, Math.min(MAX_COUNT, Math.round(Number(ref<HTMLInputElement>('count').value) || DEFAULT_COUNT)));
-      ref<HTMLInputElement>('count').value = String(count);
-      selected = new Set(suggestFrames(scores, count, saved));
+      pick();
+      refresh();
+    });
+    methodSelect.addEventListener('change', () => {
+      saveMethod(methodSelect.value as PickMethod);
+      pick();
       refresh();
     });
 
@@ -326,7 +355,7 @@ export function openFramePicker(file: File, library: LibraryStore): Promise<Vide
       saving = true;
       for (const b of host.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input')) b.disabled = true;
       const status = ref('status');
-      const frames = [...selected].sort((a, b) => a - b);
+      const frames = [...selected.keys()].sort((a, b) => a - b);
       let video: VideoRecord | null = existing;
       let added = 0;
       let same = 0;
@@ -342,7 +371,12 @@ export function openFramePicker(file: File, library: LibraryStore): Promise<Vide
           status.textContent = `Saving frame ${k + 1} of ${frames.length}…`;
           const png = await (await clip.frame(i)).convertToBlob({ type: 'image/png' });
           const prepared = await prepareFrame(png, frameFilename(phone || video.filename, i), {
-            video_id: video.id, index: i, time: clip.timeOf(i),
+            video_id: video.id,
+            index: i,
+            time: clip.timeOf(i),
+            picked_by: selected.get(i)!,
+            sharpness: scores[i],
+            sharpness_pct: percentRank(sorted, scores[i]),
           });
           if ((await library.addImage(prepared)) === 'duplicate') same++;
           else added++;
@@ -372,4 +406,23 @@ function copyCanvas(from: HTMLCanvasElement, to: HTMLCanvasElement): void {
   to.width = from.width;
   to.height = from.height;
   to.getContext('2d')!.drawImage(from, 0, 0);
+}
+
+/** The pick method last used, so every video in a study is picked the same way. */
+function loadMethod(): PickMethod {
+  try {
+    const m = localStorage.getItem(METHOD_KEY);
+    if (m === 'random' || m === 'even' || m === 'sharpest') return m;
+  } catch {
+    // storage unavailable: use the default
+  }
+  return 'random';
+}
+
+function saveMethod(m: PickMethod): void {
+  try {
+    localStorage.setItem(METHOD_KEY, m);
+  } catch {
+    // not remembered; harmless
+  }
 }

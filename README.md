@@ -25,11 +25,16 @@ In the **Library**, click **Upload images or video** or drag photos onto the pag
 A phone video has hundreds of frames, so instead of annotating them all you pick a few good ones.
 
 1. Add the video (MP4 or MOV) the same way as a photo. The app reads it and checks every frame for sharpness, which takes a few seconds.
-2. It suggests the sharpest frame in each part of the video: 10 by default, spread from start to end. The timeline shows each frame's sharpness; suggested frames are marked in blue.
-3. Click the timeline (or use `←` / `→`, with `Shift` for ten frames) to look at other frames. **Use this frame** adds the one you're looking at, and × removes one. **Suggest again** picks a new set, with however many frames you ask for.
+2. It picks one frame from each equal part of the video, 10 by default, spread from start to end. The timeline shows each frame's sharpness; chosen frames are marked in blue. How frames are picked:
+   - **A random frame from each part** (the default): unbiased, so blurry frames are included as often as they occur. Use this when the annotations are ground truth for testing the model, so its results reflect what each phone really records. The same video always gives the same frames.
+   - **Evenly spaced:** the middle frame of each part.
+   - **The sharpest in each part:** easiest to annotate, but better than a typical frame, so a model tested on these frames looks better than it is.
+
+   Use the same method for every video in a study; the app remembers the last one used.
+3. Click the timeline (or use `←` / `→`, with `Shift` for ten frames) to look at other frames. **Use this frame** adds the one you're looking at (recorded as picked by hand), and × removes one. **Pick** chooses a new set with the number and method you set.
 4. Check the phone name (taken from the file name) and, if you know it, the sensor pixel size. Then click **Save**.
 
-Only the chosen frames are saved, as images, and the video file itself isn't kept. Each video gets its own card in the library; open it to see its frames and annotate them like any image. The arrows at the top move through the video's frames in order. To pick more frames later, open the video and click **Add frames**, then choose the same file again: frames you already saved are marked in green and won't be suggested twice.
+Only the chosen frames are saved, as images, each with how it was picked and its sharpness (also as a percentile among the video's frames), so results can later be broken down by image quality. The video file itself isn't kept. Each video gets its own card in the library; open it to see its frames and annotate them like any image. The arrows at the top move through the video's frames in order. To pick more frames later, open the video and click **Add frames**, then choose the same file again: frames you already saved are marked in green and won't be suggested twice.
 
 Measurements stay in pixels. The pixel size is stored with the video but isn't used to convert to µm, because one image pixel on the specimen also depends on the microscope's magnification.
 
@@ -81,7 +86,7 @@ The app works with touch. On a phone the tools sit along the bottom edge, and th
 
 **Export** (in the library, or on a video's page) downloads what you have marked:
 
-- **Measurements (CSV):** one row per cell, with where it came from (image, or video with phone, frame number and time) and every measurement. Opens in Excel or Google Sheets.
+- **Measurements (CSV):** one row per cell, with where it came from (image, or video with phone, frame number, time, how the frame was picked and its sharpness) and every measurement. Opens in Excel or Google Sheets.
 - **Outlines and measurements (JSON):** every annotation in full, including each outline's points, for comparing shapes with the network's output.
 
 In the library, Export covers everything you can see (your images and videos, or the shared ones); on a video's page, just that video's frames. Only your own annotations are exported.
@@ -146,7 +151,7 @@ Without the env vars everything works offline in one browser, which is handy for
    - row-level security policies;
    - a private `images` storage bucket.
 
-   Then do the same with [supabase/migrations/0002_videos.sql](supabase/migrations/0002_videos.sql), which adds video support: a `videos` table, frame columns on `images`, and triggers that share a video's frames together with the video. Existing images and annotations are not changed. **Projects set up before videos existed need this step once**; until then the app works as before, and adding a video says the update is missing.
+   Then do the same with [supabase/migrations/0002_videos.sql](supabase/migrations/0002_videos.sql), which adds video support (a `videos` table, frame columns on `images`, and triggers that share a video's frames together with the video), and then [supabase/migrations/0003_frame_picks.sql](supabase/migrations/0003_frame_picks.sql), which records how each frame was picked and its sharpness. Existing images and annotations are not changed. **Projects set up before videos existed need these steps once**; until then the app works as before, and saving frames says which update is missing.
 3. **Authentication → Sign In / Providers → Email:** make sure it is enabled.
    - **Confirm email** on (the default): new accounts must click a confirmation link before signing in.
    - **Confirm email** off: people can sign in straight after creating an account, and no sign-up emails are sent. This is simpler for a class, but anyone with the app link can create an account with any address.

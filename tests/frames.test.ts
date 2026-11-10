@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { frameFilename, guessPhone, guessPixelSize, sharpness, suggestFrames, toGray } from '../src/video/frames';
+import { frameFilename, guessPhone, guessPixelSize, percentRank, pickFrames, sharpness, toGray } from '../src/video/frames';
 
 function image(w: number, h: number, f: (x: number, y: number) => number): Uint8Array {
   const g = new Uint8Array(w * h);
@@ -32,22 +32,64 @@ describe('sharpness', () => {
   });
 });
 
-describe('suggestFrames', () => {
+describe('pickFrames', () => {
   const scores = [1, 9, 2, 3, 8, 1, 7, 2, 2, 6];
 
-  it('picks the sharpest frame in each equal stretch of the clip', () => {
-    expect(suggestFrames(scores, 2)).toEqual([1, 6]);
-    expect(suggestFrames(scores, 5)).toEqual([1, 3, 4, 6, 9]);
+  it('sharpest: the sharpest frame in each equal stretch of the clip', () => {
+    expect(pickFrames(scores, 2, 'sharpest', 'v')).toEqual([1, 6]);
+    expect(pickFrames(scores, 5, 'sharpest', 'v')).toEqual([1, 3, 4, 6, 9]);
   });
 
-  it('never asks for more frames than the clip has, nor fewer than none', () => {
-    expect(suggestFrames(scores, 50)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(suggestFrames(scores, 0)).toEqual([]);
-    expect(suggestFrames([], 10)).toEqual([]);
+  it('even: the middle frame of each stretch, ignoring sharpness', () => {
+    expect(pickFrames(scores, 2, 'even', 'v')).toEqual([2, 7]);
+    expect(pickFrames(scores, 5, 'even', 'v')).toEqual([0, 2, 4, 6, 8]);
+  });
+
+  it('random: one frame per stretch, the same for the same video, different for another', () => {
+    const big = Array.from({ length: 747 }, (_, i) => Math.sin(i) + 2);
+    const a = pickFrames(big, 10, 'random', 'sha-of-video-1');
+    expect(pickFrames(big, 10, 'random', 'sha-of-video-1')).toEqual(a);
+    expect(pickFrames(big, 10, 'random', 'sha-of-video-2')).not.toEqual(a);
+    a.forEach((f, w) => {
+      expect(f).toBeGreaterThanOrEqual(Math.floor((w * 747) / 10));
+      expect(f).toBeLessThan(Math.floor(((w + 1) * 747) / 10));
+    });
+  });
+
+  it('random picks are not drawn towards sharp frames', () => {
+    // Every stretch has one very sharp frame; over many videos a random pick
+    // should land on it about as often as on any other frame (1 in 75 here).
+    const n = 750;
+    const scores = Array.from({ length: n }, (_, i) => (i % 75 === 37 ? 100 : 1));
+    let sharp = 0;
+    let total = 0;
+    for (let v = 0; v < 200; v++) {
+      for (const f of pickFrames(scores, 10, 'random', `video-${v}`)) {
+        total++;
+        if (scores[f] === 100) sharp++;
+      }
+    }
+    expect(sharp / total).toBeLessThan(0.05);
+  });
+
+  it('never picks more frames than the clip has, nor fewer than none', () => {
+    expect(pickFrames(scores, 50, 'sharpest', 'v')).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(pickFrames(scores, 0, 'random', 'v')).toEqual([]);
+    expect(pickFrames([], 10, 'even', 'v')).toEqual([]);
   });
 
   it('skips frames that are already saved', () => {
-    expect(suggestFrames(scores, 2, new Set([1, 6]))).toEqual([4, 9]);
+    expect(pickFrames(scores, 2, 'sharpest', 'v', new Set([1, 6]))).toEqual([4, 9]);
+    expect(pickFrames(scores, 2, 'even', 'v', new Set([2, 7]))).toEqual([1, 6]);
+    const r = pickFrames(scores, 10, 'random', 'v', new Set([0, 1, 2]));
+    expect(r).toEqual([3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it('ranks a score among the video\'s frames as a percentile', () => {
+    const sorted = [1, 2, 2, 3, 9];
+    expect(percentRank(sorted, 1)).toBe(0);
+    expect(percentRank(sorted, 9)).toBe(100);
+    expect(percentRank(sorted, 3)).toBe(75);
   });
 });
 
